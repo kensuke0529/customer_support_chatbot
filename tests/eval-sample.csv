@@ -1,0 +1,52 @@
+user_message,expected_classification,expected_response
+Why was I charged twice?,billing,I'll help you investigate the double charge. Let me check your account to see what happened.
+I need a refund for my last purchase,returns,Refunds are processed within 5-7 business days. Please provide your order number and reason for the refund.
+How much does the premium plan cost?,billing,The premium plan costs $29.99/month. You can view all pricing options in Settings > Billing.
+Can you send me an invoice?,billing,You can download invoices from Settings > Billing > Invoices. All past invoices are available there.
+I forgot my password,account,You can reset your password by clicking "Forgot Password" on the login page. We'll send you a reset link.
+How do I change my email address?,account,You can update your email address in Settings > Account > Email. You'll need to verify the new email address.
+I can't access my account,account,Let me help you regain access. Please verify your email address and we'll send you account recovery instructions.
+How long does shipping take?,shipping,Standard shipping takes 3-5 business days. Express shipping is available for 1-2 business days.
+My order hasn't arrived,shipping,Let me track your order. Please provide your order number and I'll check the shipping status for you.
+Where is my package?,shipping,I can help you track your package. Please provide your order number and I'll check the current shipping status.
+How do I cancel my subscription?,subscription,To cancel your subscription, please go to Settings > Subscription and click Cancel.
+Can I change my subscription plan?,subscription,Yes! You can upgrade or downgrade your plan at any time in Settings > Subscription > Change Plan.
+I want to upgrade my plan,subscription,You can upgrade your plan by going to Settings > Subscription > Upgrade. We offer several plans to choose from.
+What's your return policy?,returns,We offer a 30-day money-back guarantee. Items must be in original condition. Contact us to initiate a return.
+How do I initiate a return?,returns,You can initiate a return by going to Orders > Select Item > Return. We'll provide you with a return label and instructions.
+What are your business hours?,general,Our customer support is available Monday-Friday 9am-5pm EST. You can also reach us 24/7 via email.
+How do I contact customer support?,general,You can reach us via email at support@company.com, phone at 1-800-XXX-XXXX, or through our live chat.
+refund,returns,To process a return or refund, please provide your order number and reason. Refunds are processed within 5-7 business days after we receive the returned item.
+help,general,How can I assist you today? Please let me know what you need help with and I'll be happy to guide you.
+I want my money back,returns,If you're requesting a refund, please provide your order number and reason. Refunds are processed within 5-7 business days.
+"I got charged but I didn't even receive my package yet, this is ridiculous",billing,I'll help you investigate the double charge. Let me check your account to see what happened.
+"My subscription renewed but I thought I cancelled it last month, can you check?",subscription,To cancel your subscription, please go to Settings > Subscription and click Cancel.
+"The item I received is damaged, what do I do now?",returns,You can initiate a return by going to Orders > Select Item > Return. We'll provide you with a return label and instructions.
+"I've been trying to log in for 30 minutes and keep getting an error message",account,Let me help you regain access. Please verify your email address and we'll send you account recovery instructions.
+"Do you offer expedited shipping? I need this by Friday",shipping,Standard shipping takes 3-5 business days. Express shipping is available for 1-2 business days.
+"I'm moving to a new address, how do I update my account and shipping info?",account,You can update your email address in Settings > Account > Email. You'll need to verify the new email address.
+"Can I get a copy of all my receipts from the past 6 months for tax purposes?",billing,You can download invoices from Settings > Billing > Invoices. All past invoices are available there.
+"I want to pause my subscription for 2 months while I'm traveling",subscription,Yes! You can upgrade or downgrade your plan at any time in Settings > Subscription > Change Plan.
+"The tracking says delivered but I never got it",shipping,I can help you track your package. Please provide your order number and I'll check the current shipping status.
+"How do I switch from monthly to annual billing?",subscription,You can upgrade your plan by going to Settings > Subscription > Upgrade. We offer several plans to choose from.
+"I accidentally ordered 2 of the same item, can I cancel one?",returns,You can initiate a return by going to Orders > Select Item > Return. We'll provide you with a return label and instructions.
+"What's the difference between your premium and basic plans?",billing,The premium plan costs $29.99/month. You can view all pricing options in Settings > Billing.
+"Someone else is using my account, I need help securing it",account,Let me help you regain access. Please verify your email address and we'll send you account recovery instructions.
+"I was charged sales tax but I'm in a tax-exempt state",billing,I'll help you investigate the double charge. Let me check your account to see what happened.
+"My free trial ended but I don't see a charge on my card",billing,The premium plan costs $29.99/month. You can view all pricing options in Settings > Billing.
+"Is there a way to get alerts when my package ships?",shipping,Standard shipping takes 3-5 business days. Express shipping is available for 1-2 business days.
+"I ordered the wrong size, can I exchange it?",returns,We offer a 30-day money-back guarantee. Items must be in original condition. Contact us to initiate a return.
+"Do you have a phone number? I prefer talking to someone",general,You can reach us via email at support@company.com, phone at 1-800-XXX-XXXX, or through our live chat.
+"I need to speak to a manager about a recurring issue",general,How can I assist you today? Please let me know what you need help with and I'll be happy to guide you.
+"Can someone walk me through setting up my account?",account,You can reset your password by clicking "Forgot Password" on the login page. We'll send you a reset link.
+"I'm trying to downgrade but the button isn't working",subscription,Yes! You can upgrade or downgrade your plan at any time in Settings > Subscription > Change Plan.
+"Why does the price on my invoice not match what I was quoted?",billing,I'll help you investigate the double charge. Let me check your account to see what happened.
+"I need proof of purchase for warranty claim",billing,You can download invoices from Settings > Billing > Invoices. All past invoices are available there.
+"My order is stuck in transit for over a week now",shipping,Let me track your order. Please provide your order number and I'll check the shipping status for you.
+"I want to return this but I threw away the packaging",returns,We offer a 30-day money-back guarantee. Items must be in original condition. Contact us to initiate a return.
+"Is it possible to get a refund to a different card than I used?",returns,Refunds are processed within 5-7 business days. Please provide your order number and reason for the refund.
+"I'm locked out after too many failed login attempts",account,Let me help you regain access. Please verify your email address and we'll send you account recovery instructions.
+"When do you guys close for the holidays?",general,Our customer support is available Monday-Friday 9am-5pm EST. You can also reach us 24/7 via email.
+"I signed up for premium but still see ads",subscription,You can upgrade your plan by going to Settings > Subscription > Upgrade. We offer several plans to choose from.
+"The promo code I used didn't apply to my order",billing,I'll help you investigate the double charge. Let me check your account to see what happened.
+"I need to update my credit card on file",billing,The premium plan costs $29.99/month. You can view all pricing options in Settings > Billing.
