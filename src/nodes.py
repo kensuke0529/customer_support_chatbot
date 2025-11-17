@@ -18,7 +18,6 @@ from supabase_client import (
     add_embeddings_to_supabase,
     search_similar_documents,
     check_embeddings_exist,
-    clear_all_embeddings,
     clear_document_embeddings,
 )
 
@@ -178,8 +177,8 @@ def doc_loader(file_path: str, clear_existing: bool = False):
     print(f"Document length: {doc_length} characters")
 
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=100,
+        chunk_size=1500,  # Increased for better context retention
+        chunk_overlap=200,  # Increased overlap for better continuity
         length_function=len,
     )
 
@@ -279,16 +278,53 @@ def retrieve_context(state: ChatbotInfo):
 
             print(f"✅ Loaded {loaded_count} documents into Supabase")
 
-        # Generate embedding for the query
-        query_text = f"Question Category: {state.classification_tag} | User Question: {state.user_message}"
+        # Generate embedding for the query with enhanced context
+        # Build a more descriptive query for better retrieval
+        query_text = f"{state.classification_tag} question: {state.user_message}"
         query_embedding = embeddings_model.embed_query(query_text)
 
+        # Map classification tags to likely document names for filtering
+        document_filter_map = {
+            "billing": "Billing & Payment.pdf",
+            "subscription": "Subscription Management Policy.pdf",
+            "account": "Account Management Policy.pdf",
+            "shipping": "Shipping & Delivery Policy.pdf",
+            "returns": "Customer Support Policy.pdf",
+        }
+
+        filter_doc = document_filter_map.get(state.classification_tag)
+
         # Search for similar documents
-        results = search_similar_documents(
-            query_embedding=query_embedding,
-            match_threshold=0.7,  # Minimum similarity threshold
-            match_count=3,  # Number of results to return
-        )
+        # Start with a lower threshold and try progressively lower if no results
+        thresholds = [0.5, 0.3, 0.2, 0.1]
+        results = []
+
+        for threshold in thresholds:
+            results = search_similar_documents(
+                query_embedding=query_embedding,
+                match_threshold=threshold,  # Minimum similarity threshold
+                match_count=5,  # Increased from 3 to 5 for more comprehensive context
+                filter_document_name=filter_doc,  # Filter by relevant document if classification matches
+            )
+            if results:
+                break  # Found results, stop trying lower thresholds
+
+        # If filtered search didn't find enough results, try without filter
+        if len(results) < 3:
+            for threshold in thresholds:
+                unfiltered_results = search_similar_documents(
+                    query_embedding=query_embedding,
+                    match_threshold=threshold,
+                    match_count=5 - len(results),  # Fill remaining slots
+                )
+                if unfiltered_results:
+                    # Combine and deduplicate by content
+                    existing_contents = {r.get("content", "") for r in results}
+                    for r in unfiltered_results:
+                        if r.get("content", "") not in existing_contents:
+                            results.append(r)
+                    if len(results) >= 5:
+                        break
 
         if results:
             context = "\n\n".join([result["content"] for result in results])
@@ -600,8 +636,26 @@ def escalation_node(state: ChatbotInfo):
     """
     Handles escalation to human support.
     Prepares a comprehensive summary for the human agent.
+    For security emergencies, provides immediate actionable steps.
     If no contact info found, prompts user for email.
     """
+    # Check if this is a security emergency
+    security_keywords = [
+        "hacked",
+        "hack",
+        "fraud",
+        "fraudulent",
+        "unauthorized",
+        "security",
+        "breach",
+        "stolen",
+        "identity theft",
+    ]
+    user_message_lower = state.user_message.lower()
+    is_security_emergency = any(
+        keyword in user_message_lower for keyword in security_keywords
+    )
+
     # Check if we need to ask for contact information
     needs_contact = not state.user_email and not state.user_name
 
@@ -645,8 +699,29 @@ This query has been escalated to a human agent for handling.
 Please review the context and provide appropriate assistance to the customer.
 """
 
-    # Response message - ask for email if no contact info
-    if needs_contact:
+    # Response message - provide immediate steps for security, then ask for email if needed
+    if is_security_emergency:
+        # Security emergencies get immediate actionable steps
+        response_message = (
+            "⚠️ **Immediate Action Required**\n\n"
+            "Please take these steps right away to secure your account:\n\n"
+            "1. **Report this immediately** to security@company.com\n"
+            "2. **Change your password** immediately: Settings > Account > Password\n"
+            "3. **Enable Two-Factor Authentication (2FA)** for added security: Settings > Security > 2FA\n"
+            "4. **Review recent account activity** for any unauthorized actions\n\n"
+        )
+        if needs_contact:
+            response_message += (
+                "We've escalated this to our security team. To ensure we can follow up with you, "
+                "could you please provide your email address? A security specialist will contact you shortly."
+            )
+        else:
+            response_message += (
+                "We've escalated this to our security team. A security specialist will review your account "
+                "and contact you shortly to provide additional assistance."
+            )
+        needs_contact_info = needs_contact
+    elif needs_contact:
         response_message = (
             "Thank you for your patience. Your query has been escalated to our support team. "
             "To ensure we can follow up with you, could you please provide your email address? "

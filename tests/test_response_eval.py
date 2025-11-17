@@ -4,64 +4,138 @@ from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
 import sys
 from pathlib import Path
-
+import traceback
+import re
+import uuid
 
 load_dotenv()
-
-# Add src path for agent import
-src_path = Path(__file__).parent.parent / "src"
-sys.path.insert(0, str(src_path))
-
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from agent import app
 
-dataset_name = "Response_eval"
+dataset_name = "eval_set"
+eval_llm = ChatOpenAI(model="gpt-4o", temperature=0)
+
+
+def detect_escalation(response: str) -> bool:
+    """Detect if escalation happened based on response content."""
+    if not response:
+        return False
+    indicators = [
+        "escalated to our support team",
+        "escalated to our team",
+        "escalated to the support team",
+        "escalated to a human agent",
+        "has been escalated",
+        "query has been escalated",
+        "escalation to",
+    ]
+    return any(ind in response.lower() for ind in indicators)
 
 
 def predict_function(inputs: dict) -> dict:
-    user_message = inputs.get("user_message", "")
+    """Predict function that runs the agent and returns the response."""
+    user_message = inputs.get("user_message") or inputs.get("user_query", "")
+    if not user_message:
+        return {"output": "Error: No user message provided", "escalated": False}
+
+    # Generate a unique thread_id for this evaluation run
+    thread_id = str(uuid.uuid4())
+    config = {"configurable": {"thread_id": thread_id}}
+
     initial_state = {
         "user_message": user_message,
         "classification_tag": "",
-        "classification_confidence": 0.0,
         "context": "",
         "response": "",
+        "response_validation": "",
+        "response_validation_reason": "",
+        "response_retry_count": 0,
+        "contact_info_source": "none",
+        "needs_contact_info": False,
+        "user_email": None,
+        "user_name": None,
+        "order_id": None,
+        "session_id": None,
+        "messages": [],
+        "thread_id": thread_id,
     }
 
-    # Run the app (chain, graph, or agent)
-    result = app.invoke(initial_state)
+    try:
+        result = app.invoke(initial_state, config=config)
+        final_response = result.get("response", "").strip()
+        if not final_response:
+            return {"output": "Error: No response generated", "escalated": False}
+        return {
+            "output": final_response,
+            "escalated": detect_escalation(final_response),
+        }
+    except Exception as e:
+        print(f"ERROR in predict_function: {e}\n{traceback.format_exc()}")
+        return {"output": f"Error running agent: {str(e)}", "escalated": False}
 
-    # Extract only the conversational response
-    final_response = result.get("response", "").strip()
-    return {"output": final_response}
+
+def _parse_bool(value):
+    """Parse boolean from string or return bool value."""
+    if isinstance(value, str):
+        return value.lower() in ("true", "1", "yes")
+    return bool(value)
 
 
-# Initialize OpenAI LLM for evaluation
-eval_llm = ChatOpenAI(model="gpt-4o", temperature=0)
+def escalation_evaluator(run: Run, example: Example) -> dict:
+    """Evaluator that checks if escalation happened correctly."""
+    try:
+        outputs = run.outputs if isinstance(run.outputs, dict) else {}
+        actual = (
+            outputs.get("escalated")
+            if "escalated" in outputs
+            else detect_escalation(str(outputs.get("output", "")))
+        )
+
+        expected = False
+        for source in [example.outputs, example.inputs]:
+            if source and "escalate" in source:
+                expected = _parse_bool(source["escalate"])
+                break
+
+        match = actual == expected
+        status = "Escalated" if actual else "Not escalated"
+        comment = (
+            f"{status} (as expected)"
+            if match
+            else f"Expected {'escalation' if expected else 'no escalation'}, got {'escalation' if actual else 'no escalation'}"
+        )
+
+        return {
+            "key": "escalation_check",
+            "score": 1.0 if match else 0.0,
+            "comment": comment,
+        }
+    except Exception as e:
+        print(f"ERROR in escalation_evaluator: {e}\n{traceback.format_exc()}")
+        return {"key": "escalation_check", "score": 0.0, "comment": str(e)}
 
 
 def criteria_evaluator(run: Run, example: Example) -> dict:
     """Custom criteria evaluator using OpenAI directly"""
-    # Get prediction output (may be string or dict)
-    prediction_raw = run.outputs.get("output", "")
-    prediction = (
-        prediction_raw.get("output", "")
-        if isinstance(prediction_raw, dict)
-        else prediction_raw
-    )
+    try:
+        pred = run.outputs.get("output", "")
+        prediction = pred.get("output", "") if isinstance(pred, dict) else str(pred)
+        if not prediction or prediction.startswith("Error:"):
+            return {
+                "key": "criteria_evaluation",
+                "score": 0.0,
+                "comment": f"Failed: {prediction}",
+            }
 
-    # Get reference if available
-    reference = example.outputs.get("expected_response") or example.outputs.get(
-        "reference"
-    )
-    user_message = example.inputs.get("user_message", "")
+        reference = example.outputs.get("expected_response") or example.outputs.get(
+            "reference"
+        )
+        user_msg = example.inputs.get("user_message", "")
 
-    # Create evaluation prompt
-    eval_prompt = f"""You are evaluating a customer support response against three criteria. Rate each criterion from 0-10.
+        prompt = f"""You are evaluating a customer support response against three criteria. Rate each criterion from 0-10.
 
-USER MESSAGE: {user_message}
-
+USER MESSAGE: {user_msg}
 ACTUAL RESPONSE: {prediction}
-
 REFERENCE ANSWER: {reference if reference else "Not provided"}
 
 Evaluate on these criteria:
@@ -95,56 +169,109 @@ COMPLETENESS: [score]
 AVERAGE: [average of three scores]
 REASONING: [brief explanation of scores]"""
 
-    # Get evaluation from LLM
-    response = eval_llm.invoke(eval_prompt)
-    result_text = response.content
-
-    # Parse scores
-    scores = {}
-    lines = result_text.split("\n")
-    for line in lines:
-        if ":" in line:
-            key, value = line.split(":", 1)
-            key = key.strip().lower()
-            value = value.strip()
-            if key in ["policy_accuracy", "specificity", "completeness", "average"]:
+        response = eval_llm.invoke(prompt)
+        result_text = (
+            response.content if hasattr(response, "content") else str(response)
+        )
+        scores = {}
+        for line in result_text.split("\n"):
+            if ":" in line:
                 try:
-                    scores[key] = float(value)
-                except:
-                    pass
+                    key, val = line.split(":", 1)
+                    key = key.strip().lower().replace(" ", "_")
+                    match = re.search(r"[\d.]+", val.strip())
+                    if match and key in [
+                        "policy_accuracy",
+                        "specificity",
+                        "completeness",
+                        "average",
+                    ]:
+                        scores[key] = float(match.group())
+                except (ValueError, AttributeError):
+                    continue
 
-    # Get reasoning
-    reasoning = ""
-    if "REASONING:" in result_text:
-        reasoning = result_text.split("REASONING:")[1].strip()
+        reasoning = (
+            result_text.upper().split("REASONING:")[1].strip()
+            if "REASONING:" in result_text.upper()
+            else ""
+        )
+        avg_score = (
+            scores.get("average", 0) / 10.0
+            if "average" in scores
+            else sum(
+                [
+                    scores.get("policy_accuracy", 0),
+                    scores.get("specificity", 0),
+                    scores.get("completeness", 0),
+                ]
+            )
+            / 30.0
+        )
 
-    # Calculate average score (normalized to 0-1)
-    avg_score = scores.get("average", 0) / 10.0
-
-    return {
-        "key": "criteria_evaluation",
-        "score": avg_score,
-        "comment": f"Policy Accuracy: {scores.get('policy_accuracy', 0)}/10, "
-        f"Specificity: {scores.get('specificity', 0)}/10, "
-        f"Completeness: {scores.get('completeness', 0)}/10. "
-        f"{reasoning}",
-    }
+        return {
+            "key": "criteria_evaluation",
+            "score": avg_score,
+            "comment": f"Policy Accuracy: {scores.get('policy_accuracy', 0)}/10, Specificity: {scores.get('specificity', 0)}/10, Completeness: {scores.get('completeness', 0)}/10. {reasoning}",
+        }
+    except Exception as e:
+        print(f"ERROR in criteria_evaluator: {e}\n{traceback.format_exc()}")
+        return {"key": "criteria_evaluation", "score": 0.0, "comment": str(e)}
 
 
 if __name__ == "__main__":
-    results = evaluate(
-        predict_function,
-        data=dataset_name,
-        evaluators=[criteria_evaluator],
-        experiment_prefix="response-eval-llm-judge",
-    )
+    try:
+        results = evaluate(
+            predict_function,
+            data=dataset_name,
+            evaluators=[criteria_evaluator, escalation_evaluator],
+            experiment_prefix="response-eval-llm-judge",
+        )
+        results_list = list(results) if hasattr(results, "__iter__") else []
 
-    if hasattr(results, "__iter__"):
-        results_list = list(results)
-        print(f"\n{'=' * 60}")
-        print(f"EVALUATION COMPLETE: {len(results_list)} responses evaluated")
-        print(f"{'=' * 60}\n")
+        if results_list:
+            print(
+                f"\n{'=' * 60}\nEVALUATION COMPLETE: {len(results_list)} responses evaluated\n{'=' * 60}\n"
+            )
 
-        for i, result in enumerate(results_list):
-            print(f"\n--- Result {i + 1} ---")
-            print(result)
+            criteria_scores, escalation_scores = [], []
+            for result in results_list:
+                feedbacks = (
+                    result.feedback_stats
+                    if hasattr(result, "feedback_stats")
+                    else result.get("feedback_stats", [])
+                ) or []
+                for fb in feedbacks:
+                    key, score = fb.get("key"), fb.get("score", 0)
+                    (
+                        criteria_scores
+                        if key == "criteria_evaluation"
+                        else escalation_scores
+                    ).append(score) if key in [
+                        "criteria_evaluation",
+                        "escalation_check",
+                    ] else None
+
+            if criteria_scores:
+                avg, mn, mx = (
+                    sum(criteria_scores) / len(criteria_scores),
+                    min(criteria_scores),
+                    max(criteria_scores),
+                )
+                print(
+                    f"Response Quality - Average: {avg:.3f} ({avg * 10:.1f}/10), Min: {mn:.3f} ({mn * 10:.1f}/10), Max: {mx:.3f} ({mx * 10:.1f}/10)"
+                )
+            if escalation_scores:
+                acc = sum(escalation_scores) / len(escalation_scores)
+                print(
+                    f"Escalation Accuracy: {acc:.1%} ({int(sum(escalation_scores))}/{len(escalation_scores)} correct)"
+                )
+            print(f"{'=' * 60}\n")
+            [
+                print(f"\n--- Result {i + 1} ---\n{r}")
+                for i, r in enumerate(results_list)
+            ]
+        else:
+            print("No results returned from evaluation")
+    except Exception as e:
+        print(f"ERROR: {e}\n{traceback.format_exc()}")
+        sys.exit(1)

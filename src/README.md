@@ -76,20 +76,88 @@ The agent uses a **LangGraph StateGraph** with the following processing pipeline
   - Generates escalation summary with full context
   - Prompts for email if contact info missing
 
+## Evaluation & Performance
+
+### Evaluation Framework
+
+The chatbot is evaluated using **LangSmith** with an LLM-as-judge approach against ground truth test cases. Evaluation metrics focus on:
+
+- **Policy Accuracy**: How precisely the response follows company policy (exact paths, timeframes, procedures)
+- **Specificity**: How actionable and detailed the response is (specific steps, exact navigation paths)
+- **Completeness**: Whether the response includes all necessary information to resolve the issue
+- **Escalation Accuracy**: Whether escalation decisions are appropriate for the query type
+
+### Performance History
+
+![Evaluation Results](../static/eval.png)
+
+#### Iteration 1: Base Model (Score: 0.59/1.0)
+
+**Limitations**:
+
+- Generic responses lacking specific details
+- Fixed similarity threshold missed relevant documents
+- No document filtering by query type
+
+#### Iteration 2: RAG Optimization (Score: 0.70/1.0)
+
+**Improvements**:
+
+- Increased retrieval: `k=3` → `k=5` chunks for more comprehensive context
+- Progressive threshold fallback: Tests multiple thresholds (0.5, 0.3, 0.2, 0.1) to find relevant documents
+- Larger chunks: 1000 → 1500 characters with 200-character overlap for better context retention
+- Document filtering: Prioritizes relevant policy documents based on classification tag
+
+**Impact**: +19% improvement in response quality
+
+#### Iteration 3: Prompt Engineering (Score: 0.74/1.0)
+
+**Improvements**:
+
+- Enhanced prompt instructions emphasizing exact timeframes, contact methods, and navigation paths
+- Added strict rules against paraphrasing policy details
+- Implemented security-aware escalation with immediate actionable steps
+- Improved specificity requirements for all responses
+
+**Impact**: +7% improvement, bringing total improvement to +25% over baseline
+
+### Evaluation Dashboard
+
+![LangSmith Dashboard](../static/eval2.png)
+
+The LangSmith dashboard provides:
+
+- Real-time evaluation metrics across test cases
+- Detailed scoring breakdowns by criteria
+- Individual test case analysis
+
+### Detailed Evaluation Flow
+
+![Evaluation Details](../static/eval3.png)
+
+Each evaluation run:
+
+1. Executes the agent on standardized test cases
+2. Captures full conversation state and retrieved context
+3. Applies LLM-as-judge evaluation using GPT-4
+4. Scores on multiple criteria (accuracy, specificity, completeness)
+5. Aggregates results for overall performance metrics
+
 ## Current Settings
 
 ### Vector Store Configuration
 
-- **Embedding Model**: `text-embedding-3-small` (OpenAI)
+- **Embedding Model**: `text-embedding-3-small` (OpenAI, 1536 dimensions)
 - **Vector Database**: Supabase (pgvector)
 - **Storage Location**: Supabase `document_embeddings` table
 - **Chunking**:
-  - Chunk size: 1000 characters
-  - Overlap: 100 characters
-- **Retrieval**: Top 3 similar chunks (`k=3`)
-- **Similarity Metric**: Cosine distance
-
-
+  - Chunk size: 1500 characters (optimized for context retention)
+  - Overlap: 200 characters (ensures continuity between chunks)
+- **Retrieval Strategy**:
+  - Top 5 similar chunks (`k=5`)
+  - Progressive threshold fallback: 0.5 → 0.3 → 0.2 → 0.1
+  - Document filtering by classification tag (with fallback to all documents)
+- **Similarity Metric**: Cosine distance (1 - cosine similarity)
 
 ### Retry Logic
 
