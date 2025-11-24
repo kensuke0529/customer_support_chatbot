@@ -2,7 +2,7 @@
 
 An AI-powered customer support agent that automatically handles customer inquiries with accurate, policy-based responses and intelligent escalation.
 
-Try demo chatbot: [DEMO](https://customer-support-jnyyddv2u-kensuke0529s-projects.vercel.app/)
+Try demo chatbot: [DEMO](https://customer-support-mvp.vercel.app/)
 
   
   <img src="./static/chatbot.png" alt="chatbot" width="300"/>
