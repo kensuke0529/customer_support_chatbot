@@ -7,8 +7,19 @@ from typing import List, Literal, TypedDict
 DYNAMO_TABLE_NAME = os.getenv("CHAT_MESSAGES_TABLE", "chat_messages")
 REGION = os.getenv("AWS_REGION", "us-east-1")
 
-dynamodb = boto3.resource("dynamodb", region_name=REGION)
-table = dynamodb.Table(DYNAMO_TABLE_NAME)
+# Lazy-initialize DynamoDB to avoid blocking startup
+_dynamodb = None
+_table = None
+
+
+def get_table():
+    """Lazy initialization of DynamoDB table to avoid startup hangs."""
+    global _dynamodb, _table
+    if _table is None:
+        _dynamodb = boto3.resource("dynamodb", region_name=REGION)
+        _table = _dynamodb.Table(DYNAMO_TABLE_NAME)
+    return _table
+
 
 RoleType = Literal["user", "assistant", "human"]
 
@@ -37,7 +48,7 @@ def append_message(session_id: str, role: RoleType, content: str) -> None:
         "content": content,
     }
     try:
-        table.put_item(Item=item)
+        get_table().put_item(Item=item)
         print(
             f"✅ Stored {role} message in DynamoDB (session_id: {session_id[:8]}..., table: {DYNAMO_TABLE_NAME})"
         )
@@ -56,7 +67,7 @@ def get_history(
     limit: int = 20,
 ) -> List[ChatMessage]:
     """Return last N messages in chronological order for a session."""
-    resp = table.query(
+    resp = get_table().query(
         KeyConditionExpression=Key("session_id").eq(session_id),
         ScanIndexForward=False,  # newest first
         Limit=limit,

@@ -3,13 +3,13 @@ from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage, AIMessage
 from state import ChatbotInfo
 from nodes import (
-    classify_intent,
+    classify_and_extract_parallel,
+    execute_tools,
     retrieve_context,
     generate_response,
     response_validation,
     escalation_node,
     update_messages_node,
-    extract_user_info,
 )
 import uuid
 
@@ -29,18 +29,20 @@ memory = MemorySaver()
 
 workflow = StateGraph(ChatbotInfo)
 
-workflow.add_node("classify", classify_intent)
-workflow.add_node("extract_info", extract_user_info)
+# Use parallel node for classification + extraction (reduces latency)
+workflow.add_node("classify_and_extract", classify_and_extract_parallel)
+workflow.add_node("execute_tools", execute_tools)  # Tool execution for order lookups
 workflow.add_node("rag", retrieve_context)
 workflow.add_node("response", generate_response)
 workflow.add_node("response_validation", response_validation)
 workflow.add_node("update_messages", update_messages_node)
 workflow.add_node("escalate", escalation_node)
 
-workflow.set_entry_point("classify")
+workflow.set_entry_point("classify_and_extract")
 
-workflow.add_edge("classify", "extract_info")
-workflow.add_edge("extract_info", "rag")
+# Flow: classify+extract -> tools -> rag -> response -> validation
+workflow.add_edge("classify_and_extract", "execute_tools")
+workflow.add_edge("execute_tools", "rag")
 workflow.add_edge("rag", "response")
 workflow.add_edge("response", "response_validation")
 
@@ -77,7 +79,9 @@ def chat(user_message: str, thread_id: str = None):
     # Get current state (conversation history) from checkpoint
     current_state = app.get_state(config)
     state_values = current_state.values if current_state.values else {}
-    messages = state_values.get("messages", []).copy() if state_values.get("messages") else []
+    messages = (
+        state_values.get("messages", []).copy() if state_values.get("messages") else []
+    )
 
     # Get or generate session_id (persists across conversation)
     session_id = state_values.get("session_id")
@@ -89,6 +93,10 @@ def chat(user_message: str, thread_id: str = None):
     user_name = state_values.get("user_name")
     order_id = state_values.get("order_id")
     contact_info_source = state_values.get("contact_info_source", "none")
+
+    # Preserve contact request tracking (prevents repeated email asks)
+    has_asked_for_contact_info = state_values.get("has_asked_for_contact_info", False)
+    contact_ask_count = state_values.get("contact_ask_count", 0)
 
     # Add new user message to history
     messages.append(HumanMessage(content=user_message))
@@ -104,6 +112,9 @@ def chat(user_message: str, thread_id: str = None):
         "user_name": user_name,
         "order_id": order_id,
         "contact_info_source": contact_info_source,
+        "has_asked_for_contact_info": has_asked_for_contact_info,
+        "contact_ask_count": contact_ask_count,
+        "email_extracted_this_turn": None,  # Reset each turn - only set if email extracted NOW
         "needs_contact_info": False,
         "classification_tag": "",
         "context": "",
@@ -111,6 +122,8 @@ def chat(user_message: str, thread_id: str = None):
         "response_validation": "",
         "response_validation_reason": "",
         "response_retry_count": 0,
+        "tool_results": None,  # Reset tool results each turn
+        "tool_calls_made": [],
     }
 
     # Run the graph with checkpointing
@@ -118,7 +131,7 @@ def chat(user_message: str, thread_id: str = None):
     if current_state.values:
         # Update the state with new message, then invoke
         app.update_state(config, initial_state)
-    
+
     result = app.invoke(initial_state, config=config)
 
     # Messages are now automatically updated by update_messages_node and saved to checkpoint, so we just need to get them from result

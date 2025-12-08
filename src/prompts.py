@@ -70,29 +70,39 @@ def get_response_prompt(
     conversation_history: str = "",
     has_contact_info: bool = False,
     should_ask_for_info: bool = False,
+    just_provided_email: str = None,
 ) -> str:
     # Build history section if conversation history exists
     history_section = ""
     if conversation_history:
         history_section = f"""
+=== CONVERSATION HISTORY (for context) ===
 {conversation_history}
+=== END HISTORY ===
+"""
+
+    # Build acknowledgment instruction for newly provided info
+    acknowledgment_instruction = ""
+    if just_provided_email:
+        acknowledgment_instruction = f"""
+IMPORTANT - ACKNOWLEDGE NEW INFORMATION:
+The customer just provided their email address: {just_provided_email}
+You MUST start your response by briefly acknowledging this, e.g., "Thank you for providing your email."
+Then continue with your helpful response to their question.
 """
 
     # Build contact info instruction
     contact_info_instruction = ""
     if should_ask_for_info:
         contact_info_instruction = """
-IMPORTANT - CONTACT INFORMATION:
-- The customer has not provided their email address or name yet
-- At the END of your response, naturally and politely ask for their email address
-- Make it feel helpful and contextual, e.g., "To help track your request and ensure we can follow up, could you please provide your email address?"
-- Only ask ONCE per conversation - don't repeat if you've already asked in previous messages
-- If the customer provides their email in this message, you don't need to ask
-- Keep it brief - just one sentence at the end
+CONTACT INFORMATION REQUEST:
+- At the END of your response, briefly and naturally ask for the customer's email address
+- Example: "If you'd like me to follow up on this, could you share your email address?"
+- Keep it to one short sentence - do not be pushy
 """
     elif has_contact_info:
         contact_info_instruction = """
-NOTE: We already have the customer's contact information, so no need to ask for it.
+NOTE: We already have the customer's contact information, so do NOT ask for it again.
 """
 
     return f"""
@@ -103,12 +113,13 @@ COMPANY POLICY:
 {history_section}
 CURRENT CUSTOMER MESSAGE:
 '''{user_message}'''
-
-IMPORTANT - CONVERSATION CONTEXT:
-- If this is a follow-up question, refer to the previous conversation context above
-- Maintain continuity with previous responses - don't repeat information already provided unless the customer asks for clarification
-- If the customer is referring to something from earlier in the conversation, use the conversation history to understand the context
-- If this is the first message in a conversation, ignore the conversation history section
+{acknowledgment_instruction}
+CRITICAL - CONVERSATION CONTINUITY:
+- You MUST read and understand the conversation history above before responding
+- Do NOT repeat information you've already provided in previous turns
+- If the customer is following up on something, reference what was discussed before
+- If the customer provides new information (email, order number, etc.), acknowledge it
+- Your response should feel like a natural continuation of the conversation, not a fresh start
 {contact_info_instruction}
 POLICY ORDERING GUIDE:
 When forming the response, follow this order:

@@ -27,6 +27,10 @@ dist/
 build/
 *.egg-info/
 
+# CDK build artifacts
+cdk.out/
+*.template.json
+
 # Testing
 .pytest_cache/
 .coverage
