@@ -6,6 +6,8 @@ An AI-powered customer support agent that handles customer questions wit policy-
 
 🚀 **[Live Demo](https://cka7u7agtz.us-east-1.awsapprunner.com)**
 
+<img src="static/readme.png" alt="readme" width="700"/>
+
 Read more technical details: [/src/README.md](./src/README.md).
 ## What It Does
 
