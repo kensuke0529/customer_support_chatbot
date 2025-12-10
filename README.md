@@ -6,6 +6,13 @@ An AI-powered customer support agent that handles customer questions wit policy-
 
 🚀 **[Live Demo](https://cka7u7agtz.us-east-1.awsapprunner.com)**
 
+<img src="static/demo-chatbot1.png" alt="Chatbot Demo" width="700"/>
+
+> The screenshot above shows a demo conversation with the AI agent. For demo purpose, added some purchase history mock data. 
+> The live demo is hosted on AWS App Runner. To manage costs, the deployment may occasionally be paused.  
+> If the live chat demo link is not working, feel free to reach out and I'll be happy to provide access the demo!
+
+
 <img src="static/readme.png" alt="readme" width="700"/>
 
 Read more technical details: [/src/README.md](./src/README.md).

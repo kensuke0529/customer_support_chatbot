@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Customer Support Chatbot</title>
+    <title>Customer Support</title>
     <style>
         * {
             margin: 0;
@@ -26,6 +26,7 @@
             gap: 20px;
             align-items: flex-start;
             height: 600px;
+            justify-content: center;
         }
 
         .chat-window {
@@ -448,7 +449,6 @@
 
     </style>
 </head>
-</head>
 <body>
     <div class="main-container">
         <button onclick="window.location.reload()" style="position: absolute; top: 20px; right: 20px; padding: 8px 16px; background: white; border: 1px solid #ccc; border-radius: 4px; cursor: pointer; color: #555; font-size: 13px; z-index: 100;">
@@ -462,34 +462,8 @@
             <div class="control-dot"></div>
         </div>
 
-        <!-- Welcome Screen -->
-        <div class="welcome-screen" id="welcomeScreen">
-            <div class="robot-avatar">
-                <div class="avatar-ring">
-                    <div class="robot-face">
-                        <div class="robot-eyes">
-                            <div class="eye"></div>
-                            <div class="eye"></div>
-                        </div>
-                        <div class="robot-mouth"></div>
-                    </div>
-                </div>
-                <div class="robot-antenna left"></div>
-                <div class="robot-antenna right"></div>
-            </div>
-            
-            <div class="greeting">Bop earthling</div>
-            
-            <div class="intro-text">
-                <p>I'm your personal assistant</p>
-                <p>I'm here to help you with customer support.</p>
-            </div>
-            
-            <button class="start-button" id="startButton">Start now</button>
-        </div>
-
         <!-- Chat Interface -->
-        <div class="chat-interface" id="chatInterface">
+        <div class="chat-interface active" id="chatInterface">
             <div class="chat-header">
                 <h2>Customer Support</h2>
             </div>
@@ -563,23 +537,17 @@
         let threadId = null;
         let isWaiting = false;
 
-        const welcomeScreen = document.getElementById('welcomeScreen');
         const chatInterface = document.getElementById('chatInterface');
-        const startButton = document.getElementById('startButton');
         const chatMessages = document.getElementById('chatMessages');
         const userInput = document.getElementById('userInput');
         const sendButton = document.getElementById('sendButton');
 
-        // Start chat
-        startButton.addEventListener('click', () => {
-            welcomeScreen.classList.add('hidden');
-            chatInterface.classList.add('active');
-            
-            // Initial welcome messages
+        // Initialize chat on page load
+        window.addEventListener('DOMContentLoaded', () => {
+            // Initial welcome message
             setTimeout(() => {
                 addMessage("Hello! I am a customer support chatbot here to help you.", 'assistant');
             }, 500);
-
             userInput.focus();
         });
 
