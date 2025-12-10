@@ -32,7 +32,7 @@ def _load_purchase_db():
         return
 
     try:
-        from db.purchase_history_dynamo import (
+        from backend.db.purchase_history_dynamo import (
             get_purchases_by_email,
             get_purchase_by_order_id,
             format_purchase_for_display,
@@ -205,6 +205,7 @@ CUSTOMER_SUPPORT_TOOLS = [
 def get_tools():
     """Return the list of available tools for the agent."""
     return CUSTOMER_SUPPORT_TOOLS
+
 
 
 

@@ -22,7 +22,7 @@ from pydantic import BaseModel
 import uvicorn
 
 # Setup paths for local imports (lightweight - no heavy imports yet)
-project_root = Path(__file__).parent.parent
+project_root = Path(__file__).parent.parent.parent
 src_path = project_root / "src"
 sys.path.insert(0, str(src_path))
 
@@ -252,7 +252,7 @@ async def agent_status():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     uvicorn.run(
-        "app.main:app",
+        "backend.app.main:app",
         host="0.0.0.0",
         port=port,
         reload=True,

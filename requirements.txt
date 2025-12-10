@@ -28,6 +28,7 @@ psycopg2-binary>=2.9.0
 # Utilities
 python-dotenv>=1.0.0
 numpy>=1.24.0
+pypdf>=4.0.0
 
 # Testing
 pytest>=8.0

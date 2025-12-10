@@ -19,7 +19,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from db.purchase_history_dynamo import (
+from backend.db.purchase_history_dynamo import (
     populate_mock_data,
     ensure_mock_data_exists,
     get_purchases_by_email,

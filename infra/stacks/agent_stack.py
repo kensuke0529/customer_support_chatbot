@@ -91,9 +91,17 @@ class AgentStack(Stack):
         # Grant Secrets Manager access
         api_keys_secret.grant_read(instance_role)
 
-        # Note: S3 Vectors permissions are handled by the service itself
-        # If S3 Vectors requires specific IAM permissions, they should be added here
-        # For now, we rely on the default service permissions
+        # Grant S3 Vectors permissions for RAG
+        # Using wildcard for S3 Vectors as the ARN format may vary
+        instance_role.add_to_policy(
+            iam.PolicyStatement(
+                effect=iam.Effect.ALLOW,
+                actions=[
+                    "s3vectors:*",
+                ],
+                resources=["*"],
+            )
+        )
 
         # =====================================================================
         # IAM Role for ECR Access

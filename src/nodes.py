@@ -23,6 +23,44 @@ from prompts import CLASSIFICATION_PROMPT, get_response_prompt
 _tools_loaded = False
 _tools = None
 
+
+# =============================================================================
+# Document Loader Function (for loading PDFs into S3 Vectors)
+# =============================================================================
+def doc_loader(pdf_path: str, clear_existing: bool = False, return_chunks: bool = False):
+    """
+    Load and chunk a PDF document for vector storage.
+    
+    Args:
+        pdf_path: Path to the PDF file
+        clear_existing: Not used for S3 Vectors (kept for interface compatibility)
+        return_chunks: If True, return list of chunk texts; else return count
+    
+    Returns:
+        List[str] if return_chunks=True, else int (chunk count)
+    """
+    # Lazy imports to avoid breaking runtime when these packages aren't needed
+    from langchain_community.document_loaders import PyPDFLoader
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    
+    # Load PDF
+    loader = PyPDFLoader(pdf_path)
+    documents = loader.load()
+    
+    # Chunk with overlap for context retention
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1500,
+        chunk_overlap=200,
+        separators=["\n\n", "\n", ". ", " ", ""],
+    )
+    
+    chunks = text_splitter.split_documents(documents)
+    chunk_texts = [chunk.page_content for chunk in chunks]
+    
+    if return_chunks:
+        return chunk_texts
+    return len(chunk_texts)
+
 # =============================================================================
 # Database Imports - Lazy loaded to avoid blocking startup
 # =============================================================================
@@ -51,7 +89,7 @@ def _load_db_functions():
 
     # DynamoDB for chat history
     try:
-        from db.chat_memory_dynamo import append_message as _am, get_history as _gh
+        from backend.db.chat_memory_dynamo import append_message as _am, get_history as _gh
 
         _append_message = _am
         _get_history = _gh
@@ -63,7 +101,7 @@ def _load_db_functions():
 
     # DynamoDB for escalations
     try:
-        from db.escalations_dynamo import (
+        from backend.db.escalations_dynamo import (
             create_escalation as _ce,
             update_escalation_with_contact_info as _ueci,
             get_escalation_by_session as _gebs,
