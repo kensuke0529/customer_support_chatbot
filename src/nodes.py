@@ -1,7 +1,3 @@
-# +++++++++++++++++++++++++++++
-# Imports and Setup
-# +++++++++++++++++++++++++++++
-
 import os
 import sys
 from pathlib import Path
@@ -12,42 +8,24 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 import json
 import re
 
-# Add project root to path so we can import from db module
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from state import ChatbotInfo
 from prompts import CLASSIFICATION_PROMPT, get_response_prompt
 
-# Lazy-loaded tools
 _tools_loaded = False
 _tools = None
 
 
-# =============================================================================
-# Document Loader Function (for loading PDFs into S3 Vectors)
-# =============================================================================
 def doc_loader(pdf_path: str, clear_existing: bool = False, return_chunks: bool = False):
-    """
-    Load and chunk a PDF document for vector storage.
-    
-    Args:
-        pdf_path: Path to the PDF file
-        clear_existing: Not used for S3 Vectors (kept for interface compatibility)
-        return_chunks: If True, return list of chunk texts; else return count
-    
-    Returns:
-        List[str] if return_chunks=True, else int (chunk count)
-    """
-    # Lazy imports to avoid breaking runtime when these packages aren't needed
+
     from langchain_community.document_loaders import PyPDFLoader
     from langchain_text_splitters import RecursiveCharacterTextSplitter
     
-    # Load PDF
     loader = PyPDFLoader(pdf_path)
     documents = loader.load()
     
-    # Chunk with overlap for context retention
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1500,
         chunk_overlap=200,
@@ -61,11 +39,7 @@ def doc_loader(pdf_path: str, clear_existing: bool = False, return_chunks: bool 
         return chunk_texts
     return len(chunk_texts)
 
-# =============================================================================
-# Database Imports - Lazy loaded to avoid blocking startup
-# =============================================================================
 
-# Lazy-loaded DynamoDB functions
 _db_functions_loaded = False
 _append_message = None
 _get_history = None
@@ -87,19 +61,17 @@ def _load_db_functions():
     if _db_functions_loaded:
         return
 
-    # DynamoDB for chat history
     try:
         from backend.db.chat_memory_dynamo import append_message as _am, get_history as _gh
 
         _append_message = _am
         _get_history = _gh
-        print("✅ DynamoDB chat history enabled")
+        print("DynamoDB chat history enabled")
     except Exception as e:
-        print(f"⚠️  DynamoDB chat history import failed: {e}")
+        print(f"DynamoDB chat history import failed: {e}")
         _append_message = lambda *args, **kwargs: None
         _get_history = lambda *args, **kwargs: []
 
-    # DynamoDB for escalations
     try:
         from backend.db.escalations_dynamo import (
             create_escalation as _ce,
@@ -111,10 +83,10 @@ def _load_db_functions():
         _update_escalation_with_contact_info = _ueci
         _get_escalation_by_session = _gebs
         USE_DYNAMO_ESCALATIONS = True
-        print("✅ DynamoDB escalations enabled")
+        print("DynamoDB escalations enabled")
     except Exception as e:
-        print(f"⚠️  DynamoDB escalations import failed: {e}")
-        print("📝 Escalations will be logged to console only")
+        print(f"DynamoDB escalations import failed: {e}")
+        print("Escalations will be logged to console only")
         USE_DYNAMO_ESCALATIONS = False
         _create_escalation = lambda **kwargs: {"escalation_id": "console-only"}
         _update_escalation_with_contact_info = lambda **kwargs: None
@@ -124,42 +96,35 @@ def _load_db_functions():
 
 
 def append_message(*args, **kwargs):
-    """Wrapper for DynamoDB append_message with lazy loading."""
     _load_db_functions()
     return _append_message(*args, **kwargs)
 
 
 def get_history(*args, **kwargs):
-    """Wrapper for DynamoDB get_history with lazy loading."""
     _load_db_functions()
     return _get_history(*args, **kwargs)
 
 
 def create_escalation(**kwargs):
-    """Wrapper for DynamoDB create_escalation with lazy loading."""
     _load_db_functions()
     return _create_escalation(**kwargs)
 
 
 def update_escalation_with_contact_info(**kwargs):
-    """Wrapper for DynamoDB update_escalation_with_contact_info with lazy loading."""
     _load_db_functions()
     return _update_escalation_with_contact_info(**kwargs)
 
 
 def get_escalation_by_session(**kwargs):
-    """Wrapper for DynamoDB get_escalation_by_session with lazy loading."""
     _load_db_functions()
     return _get_escalation_by_session(**kwargs)
 
 
 def is_dynamo_escalations_enabled():
-    """Check if DynamoDB escalations are enabled (triggers lazy load)."""
     _load_db_functions()
     return USE_DYNAMO_ESCALATIONS
 
 
-# Load environment variables
 parent_env = os.path.join(os.path.dirname(__file__), "..", ".env")
 load_dotenv(parent_env)
 load_dotenv()  # Also try current directory
@@ -167,14 +132,10 @@ openai_api_key = os.getenv("OPENAI_API_KEY")
 
 if not openai_api_key:
     print(
-        "⚠️  WARNING: OPENAI_API_KEY not set. Chat functionality will fail at runtime."
+        "WARNING: OPENAI_API_KEY not set. Chat functionality will fail at runtime."
     )
 
-# +++++++++++++++++++++++++++++
-# Classification Node
-# +++++++++++++++++++++++++++++
 
-# Lazy-initialize classification LLM to avoid blocking startup
 _classification_llm = None
 _classification_chain = None
 
@@ -204,16 +165,10 @@ def classify_intent(state: ChatbotInfo):
     }
 
 
-# +++++++++++++++++++++++++++++
-# Parallel Classification + Extraction Node
-# +++++++++++++++++++++++++++++
 
 
 def classify_and_extract_parallel(state: ChatbotInfo):
-    """
-    Runs classification and user info extraction in parallel to reduce latency.
-    Combines results from both operations into a single state update.
-    """
+
     from concurrent.futures import ThreadPoolExecutor
 
     results = {}
@@ -232,7 +187,6 @@ def classify_and_extract_parallel(state: ChatbotInfo):
             print(f"⚠️  Extraction error: {e}")
             return {}
 
-    # Run both in parallel
     with ThreadPoolExecutor(max_workers=2) as executor:
         classify_future = executor.submit(run_classification)
         extract_future = executor.submit(run_extraction)
@@ -242,43 +196,34 @@ def classify_and_extract_parallel(state: ChatbotInfo):
             classify_result = classify_future.result(timeout=30)
             results.update(classify_result)
         except Exception as e:
-            print(f"⚠️  Classification timeout/error: {e}")
+            print(f"Classification timeout/error: {e}")
             results["classification_tag"] = "general"
 
         try:
             extract_result = extract_future.result(timeout=30)
             results.update(extract_result)
         except Exception as e:
-            print(f"⚠️  Extraction timeout/error: {e}")
+            print(f"Extraction timeout/error: {e}")
 
     print(
-        f"✅ Parallel classify+extract completed: tag={results.get('classification_tag')}"
+        f"Parallel classify+extract completed: tag={results.get('classification_tag')}"
     )
     return results
 
 
-# +++++++++++++++++++++++++++++
-# User Information Extraction Node
-# +++++++++++++++++++++++++++++
 
 
 def extract_user_info(state: ChatbotInfo):
-    """
-    Extracts user information (email, name, order_id) from conversation messages.
-    Uses LLM to intelligently extract structured data from natural language.
-    Also stores user message in DynamoDB for chat history.
-    """
-    # Store user message in DynamoDB
     if state.session_id:
         try:
             append_message(state.session_id, "user", state.user_message)
         except Exception as e:
-            print(f"⚠️  Error storing user message in DynamoDB: {e}")
+            print(f"Error storing user message in DynamoDB: {e}")
             import traceback
 
             traceback.print_exc()
     else:
-        print("⚠️  session_id is None, skipping DynamoDB storage for user message")
+        print("session_id is None, skipping DynamoDB storage for user message")
 
     extraction_llm = ChatOpenAI(
         model="gpt-4o-mini",
@@ -286,10 +231,8 @@ def extract_user_info(state: ChatbotInfo):
         temperature=0,
     )
 
-    # Build conversation context for extraction
     conversation_text = ""
     if state.messages:
-        # Use all messages for better extraction context
         for msg in state.messages:
             if hasattr(msg, "content"):
                 if msg.__class__.__name__ == "HumanMessage":
@@ -297,7 +240,6 @@ def extract_user_info(state: ChatbotInfo):
                 elif msg.__class__.__name__ == "AIMessage":
                     conversation_text += f"Assistant: {msg.content}\n"
 
-    # Also include current message
     conversation_text += f"User: {state.user_message}\n"
 
     extraction_prompt = f"""Extract structured information from this customer support conversation.
@@ -333,7 +275,6 @@ If information is not found, use null. Be precise - only extract if explicitly m
             traceback.print_exc()
             return {}  # Return empty updates if LLM call fails
 
-        # Remove markdown code blocks if present
         if content.startswith("```"):
             lines = content.split("\n")
             if lines[0].startswith("```"):
@@ -348,7 +289,6 @@ If information is not found, use null. Be precise - only extract if explicitly m
             print(
                 f"⚠️  JSON parsing error in extraction (content: {content[:200]}): {e}"
             )
-            # Try to extract email manually as fallback
             import re
 
             email_pattern = r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"
@@ -361,7 +301,6 @@ If information is not found, use null. Be precise - only extract if explicitly m
                 }
             return {}
 
-        # Update only if new information is found (don't overwrite existing)
         updates = {}
         contact_found = False
 
@@ -376,7 +315,6 @@ If information is not found, use null. Be precise - only extract if explicitly m
         if result.get("order_id") and not state.order_id:
             updates["order_id"] = result["order_id"]
 
-        # Update contact_info_source if we extracted something
         if contact_found and state.contact_info_source == "none":
             updates["contact_info_source"] = "extracted"
 
@@ -410,13 +348,9 @@ If information is not found, use null. Be precise - only extract if explicitly m
         return {}
 
 
-# +++++++++++++++++++++++++++++
-# Tool Execution Node
-# +++++++++++++++++++++++++++++
 
 
 def _load_tools():
-    """Lazy load tools to avoid startup delays."""
     global _tools_loaded, _tools
     if _tools_loaded:
         return _tools
@@ -436,10 +370,7 @@ def _load_tools():
 
 
 def _should_use_tools(state: ChatbotInfo) -> bool:
-    """
-    Determine if we should try to use tools based on the user message.
-    Returns True if the message seems to be asking about orders/purchases.
-    """
+
     order_keywords = [
         "order",
         "purchase",
@@ -460,7 +391,6 @@ def _should_use_tools(state: ChatbotInfo) -> bool:
 
 def _extract_order_id_from_message(message: str) -> str | None:
     """Extract order ID from message if present."""
-    # Match patterns like ORD-123456 or just 123456 after "order"
     patterns = [
         r"ORD-\d+",
         r"ord-\d+",
@@ -471,9 +401,7 @@ def _extract_order_id_from_message(message: str) -> str | None:
         match = re.search(pattern, message, re.IGNORECASE)
         if match:
             result = match.group(0)
-            # Normalize to ORD- format
             if not result.upper().startswith("ORD-"):
-                # Extract just the number
                 num_match = re.search(r"\d+", result)
                 if num_match:
                     return f"ORD-{num_match.group(0)}"
@@ -486,7 +414,6 @@ def execute_tools(state: ChatbotInfo):
     Execute relevant tools based on user query.
     This node checks if the user is asking about orders and calls the appropriate tool.
     """
-    # Skip if tools don't seem relevant
     if not _should_use_tools(state):
         print("⏭️ Skipping tools - not an order-related query")
         return {"tool_results": None, "tool_calls_made": []}
@@ -499,21 +426,16 @@ def execute_tools(state: ChatbotInfo):
     tool_results = []
     tool_calls = []
 
-    # Get tool functions by name
     tool_map = {tool.name: tool for tool in tools}
 
-    # Check for order ID in message
     order_id = _extract_order_id_from_message(state.user_message)
 
-    # Also check state for previously extracted order ID
     if not order_id and state.order_id:
         order_id = state.order_id
 
-    # Determine which tool to call based on query
     message_lower = state.user_message.lower()
 
     try:
-        # If we have an order ID, get specific order details
         if order_id:
             if (
                 "status" in message_lower
@@ -532,7 +454,6 @@ def execute_tools(state: ChatbotInfo):
                     tool_calls.append("get_order_details")
                     print(f"✅ Called get_order_details for {order_id}")
 
-        # If we have email but no order ID, look up customer orders
         elif state.user_email:
             if "lookup_customer_orders" in tool_map:
                 result = tool_map["lookup_customer_orders"].invoke(state.user_email)
@@ -540,7 +461,6 @@ def execute_tools(state: ChatbotInfo):
                 tool_calls.append("lookup_customer_orders")
                 print(f"✅ Called lookup_customer_orders for {state.user_email}")
 
-        # No email or order ID - we need more info
         else:
             tool_results.append(
                 "To look up your order information, I'll need either your email address or order number (like ORD-123456)."
@@ -557,7 +477,6 @@ def execute_tools(state: ChatbotInfo):
             "Sorry, I encountered an error looking up that information."
         )
 
-    # Combine results
     combined_results = "\n\n".join(tool_results) if tool_results else None
 
     return {
@@ -566,16 +485,11 @@ def execute_tools(state: ChatbotInfo):
     }
 
 
-# +++++++++++++++++++++++++++++
-# Context Retrieval Node
-# +++++++++++++++++++++++++++++
 
-# S3 Vectors config (matching load_documents.py)
 S3_REGION = os.getenv("AWS_REGION", "us-east-1")
 S3_VECTOR_BUCKET = os.getenv("VECTOR_BUCKET", "s3-vector-chatbot-policy-docs")
 S3_VECTOR_INDEX = os.getenv("VECTOR_INDEX", "my-s3-vector-index")
 
-# Lazy-initialize S3 Vectors client to avoid blocking startup
 _s3v_client = None
 
 
@@ -588,12 +502,7 @@ def get_s3v_client():
 
 
 def retrieve_context(state: ChatbotInfo):
-    """
-    Retrieves relevant context from S3 Vectors based on user query.
-    Returns empty context if S3 Vectors is not configured or fails.
-    """
     try:
-        # Try S3 Vectors first
         return retrieve_context_rag(state)
     except Exception as e:
         error_msg = f"❌ RAG FAILED: S3 Vectors retrieval failed: {e}"
@@ -601,7 +510,6 @@ def retrieve_context(state: ChatbotInfo):
         import traceback
 
         traceback.print_exc()
-        # Log configuration for debugging
         print(f"   S3_REGION: {S3_REGION}")
         print(f"   S3_VECTOR_BUCKET: {S3_VECTOR_BUCKET}")
         print(f"   S3_VECTOR_INDEX: {S3_VECTOR_INDEX}")
@@ -609,30 +517,16 @@ def retrieve_context(state: ChatbotInfo):
 
 
 def retrieve_context_rag(state: ChatbotInfo, top_k: int = 5):
-    """
-    Retrieves relevant context from S3 Vectors vector database based on user query.
 
-    Args:
-        state: ChatbotInfo state containing user message and classification
-        top_k: Number of top similar chunks to retrieve
-
-    Returns:
-        Dictionary with "context" key containing retrieved text chunks
-    """
-    # Create embeddings model
     embeddings_model = OpenAIEmbeddings(
         model="text-embedding-3-small", api_key=openai_api_key
     )
 
-    # Build enhanced query with classification context
     query_text = f"{state.classification_tag} question: {state.user_message}"
 
-    # 1. Embed user query
     query_embedding = embeddings_model.embed_query(query_text)
-    # Convert to float32 list for S3 Vectors
     query_vec = np.array(query_embedding, dtype=np.float32).tolist()
 
-    # 2. Query S3 Vectors
     try:
         resp = get_s3v_client().query_vectors(
             vectorBucketName=S3_VECTOR_BUCKET,
@@ -696,9 +590,6 @@ def retrieve_context_rag(state: ChatbotInfo, top_k: int = 5):
         return {"context": ""}
 
 
-# +++++++++++++++++++++++++++++
-# Response Generation Node
-# +++++++++++++++++++++++++++++
 
 
 def generate_response(state: ChatbotInfo):
@@ -710,7 +601,6 @@ def generate_response(state: ChatbotInfo):
         max_tokens=300,
     )
 
-    # Load recent history from DynamoDB if session_id is available
     conversation_context = ""
     history_loaded = False
 
@@ -734,7 +624,6 @@ def generate_response(state: ChatbotInfo):
 
             traceback.print_exc()
 
-    # Fallback to state.messages if DynamoDB didn't work or returned empty
     if not history_loaded and state.messages and len(state.messages) > 1:
         recent_messages = state.messages[-10:]  # Get more messages from state
         conversation_context = "\n\nPrevious conversation:\n"
@@ -749,7 +638,6 @@ def generate_response(state: ChatbotInfo):
                 conversation_context += f"{role}: {msg.content}\n"
         print(f"✅ Using {len(recent_messages)} messages from state.messages")
 
-    # Check if user is asking about escalation and add escalation context
     user_message_lower = state.user_message.lower()
     if is_dynamo_escalations_enabled() and any(
         keyword in user_message_lower
@@ -792,21 +680,16 @@ def generate_response(state: ChatbotInfo):
                 import traceback
 
                 traceback.print_exc()
-                # Don't fail if we can't get escalation info
 
-    # Check if we have contact info
     has_contact_info = bool(state.user_email or state.user_name)
 
-    # Determine if we should ask for contact info
-    # Only ask if: no contact info AND haven't already asked AND relevant category
-    # Max 1 ask per conversation to avoid being intrusive
     should_ask_for_info = (
         not has_contact_info
-        and not state.has_asked_for_contact_info  # Don't ask if we've already asked
-        and state.contact_ask_count < 1  # Safety: max 1 ask
+        and not state.has_asked_for_contact_info
+        and state.contact_ask_count < 1  
         and state.classification_tag
         in ["billing", "subscription", "account", "returns"]
-        and len(state.messages) >= 2  # After at least one exchange
+        and len(state.messages) >= 2  
     )
 
     # Check if email was just provided this turn (for acknowledgment)
@@ -814,7 +697,6 @@ def generate_response(state: ChatbotInfo):
         state.email_extracted_this_turn if state.email_extracted_this_turn else None
     )
 
-    # Add tool results to context if available
     context_with_tools = state.context
     if state.tool_results:
         context_with_tools = f"""
@@ -839,10 +721,8 @@ Use the above order information to answer the customer's question about their or
     )
     response = response_llm.invoke(prompt)
 
-    # Post-process: Remove any escalation language that might have slipped through
     response_text = response.content
 
-    # Remove common escalation phrases
     escalation_phrases = [
         "I'll escalate this to our support team for review.",
         "I don't see that in our current policy. I'll escalate this to our support team for review.",
@@ -863,24 +743,19 @@ Use the above order information to answer the customer's question about their or
     ]
 
     for phrase in escalation_phrases:
-        # Remove the phrase and any trailing punctuation/whitespace
         response_text = response_text.replace(phrase, "").strip()
-        # Also handle case variations
         response_text = response_text.replace(phrase.lower(), "").strip()
         response_text = response_text.replace(phrase.capitalize(), "").strip()
 
-    # Clean up any double spaces or periods that might result
     import re
 
     response_text = re.sub(r"\.\s*\.", ".", response_text)  # Remove double periods
     response_text = re.sub(r"\s+", " ", response_text)  # Remove extra spaces
     response_text = response_text.strip()
 
-    # If response is empty after cleaning, use original (shouldn't happen, but safety net)
     if not response_text:
         response_text = response.content
 
-    # Store assistant response in DynamoDB
     if state.session_id:
         try:
             append_message(state.session_id, "assistant", response_text)
@@ -892,10 +767,8 @@ Use the above order information to answer the customer's question about their or
     else:
         print("⚠️  session_id is None, skipping DynamoDB storage for assistant message")
 
-    # Build return dict with response and contact tracking updates
     result = {"response": response_text}
 
-    # Track if we asked for contact info this turn (prevents repeated asks)
     if should_ask_for_info:
         result["has_asked_for_contact_info"] = True
         result["contact_ask_count"] = state.contact_ask_count + 1
@@ -903,14 +776,10 @@ Use the above order information to answer the customer's question about their or
     return result
 
 
-# +++++++++++++++++++++++++++++
-# Utility: Log Escalation
-# +++++++++++++++++++++++++++++
 
 
 def log_escalation(state: ChatbotInfo, reason: str):
     """Logs escalation data to RDS"""
-    # Build metadata dict from validation information
     metadata_dict = {
         "validation_reason": reason,
         "retry_count": state.response_retry_count,
@@ -942,9 +811,6 @@ def log_escalation(state: ChatbotInfo, reason: str):
         print(f"⚠️  Error logging escalation to RDS: {e}")
 
 
-# +++++++++++++++++++++++++++++
-# Response Validation Node
-# +++++++++++++++++++++++++++++
 
 
 def _fast_security_check(user_message: str) -> bool:
@@ -972,14 +838,9 @@ def _fast_security_check(user_message: str) -> bool:
 
 
 def _fast_response_check(response: str) -> tuple[bool, str]:
-    """
-    Rule-based quick validation. Returns (is_valid, reason).
-    Catches obvious issues without needing LLM.
-    """
     if not response or len(response.strip()) < 10:
         return False, "Response is empty or too short"
 
-    # Check for obviously problematic content
     bad_patterns = [
         "i don't know",
         "i cannot help",
@@ -997,12 +858,6 @@ def _fast_response_check(response: str) -> tuple[bool, str]:
 
 
 def response_validation(state: ChatbotInfo):
-    """
-    Validates the generated response for quality, accuracy, and completeness.
-    Uses fast rule-based checks first, then LLM validation only when needed.
-    Returns PASS, RETRY, or FAIL status.
-    """
-    # FAST PATH 1: Check for security emergencies (rule-based, no LLM needed)
     if _fast_security_check(state.user_message):
         print("⚠️  Security emergency detected via fast check - escalating")
         log_escalation(state, "Security emergency detected (fast path)")
@@ -1012,7 +867,6 @@ def response_validation(state: ChatbotInfo):
             "response_retry_count": state.response_retry_count,
         }
 
-    # FAST PATH 2: Quick response quality check
     is_valid, reason = _fast_response_check(state.response)
     if not is_valid:
         print(f"⚠️  Fast validation failed: {reason}")
@@ -1022,8 +876,6 @@ def response_validation(state: ChatbotInfo):
             "response_retry_count": state.response_retry_count + 1,
         }
 
-    # FAST PATH 3: Skip full LLM validation for simple/general queries
-    # These typically don't need deep validation
     simple_categories = ["general"]
     if state.classification_tag in simple_categories and len(state.response) > 30:
         print("✅ Fast validation PASS for simple query (skipping LLM)")
@@ -1033,7 +885,6 @@ def response_validation(state: ChatbotInfo):
             "response_retry_count": state.response_retry_count,
         }
 
-    # FULL LLM VALIDATION: For complex queries (billing, account, returns, etc.)
     validation_llm = ChatOpenAI(
         model="gpt-4o-mini",
         api_key=openai_api_key,
@@ -1091,7 +942,6 @@ Default to PASS for normal questions. But ALWAYS FAIL for security emergencies.
         response = validation_llm.invoke(validation_prompt)
         content = response.content.strip()
 
-        # Remove markdown code blocks if present
         if content.startswith("```"):
             # Remove opening ```json or ``` and closing ```
             lines = content.split("\n")
@@ -1101,7 +951,6 @@ Default to PASS for normal questions. But ALWAYS FAIL for security emergencies.
                 lines = lines[:-1]
             content = "\n".join(lines).strip()
 
-        # Parse JSON
         result = json.loads(content)
 
         status = result.get("status", "FAIL")
@@ -1111,7 +960,6 @@ Default to PASS for normal questions. But ALWAYS FAIL for security emergencies.
         if status == "RETRY":
             new_retry_count += 1
 
-        # Log escalation if security emergency detected
         if status == "FAIL":
             # Check if it's a security emergency based on reason or user message
             security_keywords = [
@@ -1156,23 +1004,15 @@ Default to PASS for normal questions. But ALWAYS FAIL for security emergencies.
         }
 
 
-# +++++++++++++++++++++++++++++
-# Update Messages Node (for checkpointing)
-# +++++++++++++++++++++++++++++
 
 
 def update_messages_node(state: ChatbotInfo):
-    """
-    Updates the messages list with the assistant response for checkpointing.
-    This ensures conversation history is properly saved.
-    """
+
     from langchain_core.messages import AIMessage
 
     messages = state.messages.copy() if state.messages else []
 
-    # Add assistant response if it exists and hasn't been added yet
     if state.response and messages:
-        # Check if the last message is already the assistant response
         last_msg = messages[-1] if messages else None
         if not (
             last_msg
@@ -1184,20 +1024,9 @@ def update_messages_node(state: ChatbotInfo):
     return {"messages": messages}
 
 
-# +++++++++++++++++++++++++++++
-# Escalation Node
-# +++++++++++++++++++++++++++++
 
 
 def escalation_node(state: ChatbotInfo):
-    """
-    Handles escalation to human support.
-    Creates escalation record in RDS and prepares a comprehensive summary for the human agent.
-    For security emergencies, provides immediate actionable steps.
-    If no contact info found, prompts user for email.
-    """
-    # Create escalation record in RDS
-    # Build metadata dict from additional state information
     metadata_dict = {
         "validation_status": state.response_validation,
         "validation_reason": state.response_validation_reason,
@@ -1231,7 +1060,6 @@ def escalation_node(state: ChatbotInfo):
         print(f"⚠️  Error creating escalation in RDS: {e}")
         escalation_id = None
 
-    # Check if this is a security emergency
     security_keywords = [
         "hacked",
         "hack",
@@ -1248,10 +1076,8 @@ def escalation_node(state: ChatbotInfo):
         keyword in user_message_lower for keyword in security_keywords
     )
 
-    # Check if we need to ask for contact information
     needs_contact = not state.user_email and not state.user_name
 
-    # Build escalation message with user info
     user_info_section = ""
     if state.user_email or state.user_name or state.order_id:
         user_info_section = "\nUser Information:\n"
@@ -1291,9 +1117,7 @@ This query has been escalated to a human agent for handling.
 Please review the context and provide appropriate assistance to the customer.
 """
 
-    # Response message - provide immediate steps for security, then ask for email if needed
     if is_security_emergency:
-        # Security emergencies get immediate actionable steps
         response_message = (
             "⚠️ **Immediate Action Required**\n\n"
             "Please take these steps right away to secure your account:\n\n"
@@ -1327,7 +1151,6 @@ Please review the context and provide appropriate assistance to the customer.
         )
         needs_contact_info = False
 
-    # Store escalation response in DynamoDB
     if state.session_id:
         try:
             append_message(state.session_id, "assistant", response_message)
@@ -1339,11 +1162,9 @@ Please review the context and provide appropriate assistance to the customer.
     else:
         print("⚠️  session_id is None, skipping DynamoDB storage for escalation message")
 
-    # Update messages list for checkpointing (important for conversation history)
     from langchain_core.messages import AIMessage
 
     messages = state.messages.copy() if state.messages else []
-    # Add escalation response to messages if not already there
     if response_message:
         last_msg = messages[-1] if messages else None
         if not (
@@ -1355,7 +1176,7 @@ Please review the context and provide appropriate assistance to the customer.
 
     return {
         "response": response_message,
-        "messages": messages,  # Include updated messages for checkpointing
+        "messages": messages,  
         "escalation_summary": escalation_message,
         "needs_contact_info": needs_contact_info,
         "escalation_id": escalation_id,

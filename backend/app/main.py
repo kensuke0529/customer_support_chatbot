@@ -21,14 +21,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 
-# Setup paths for local imports (lightweight - no heavy imports yet)
 project_root = Path(__file__).parent.parent.parent
 src_path = project_root / "src"
 sys.path.insert(0, str(src_path))
 
-# =============================================================================
-# FastAPI Application Initialization
-# =============================================================================
 app = FastAPI(
     title="Customer Support AI Agent",
     version="1.0.0",
@@ -48,9 +44,6 @@ app = FastAPI(
     """,
 )
 
-# =============================================================================
-# CORS Configuration (for frontend integration)
-# =============================================================================
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Configure appropriately for production
@@ -59,23 +52,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# =============================================================================
-# Static Files (Chatbot UI) - Lazy mount to avoid blocking startupa
-# =============================================================================
-# Mount static files lazily to avoid blocking health checks
 static_path = project_root / "static"
-# Note: Static files are mounted but won't block startup
 if static_path.exists():
     try:
         app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
     except Exception as e:
         print(f"⚠️  Warning: Could not mount static files: {e}")
-        # Don't fail startup if static files can't be mounted
 
 
-# =============================================================================
-# Request/Response Models
-# =============================================================================
 class ChatRequest(BaseModel):
     """Chat request model with optional session management"""
 
@@ -92,9 +76,7 @@ class HealthResponse(BaseModel):
     agent_loaded: bool = False
 
 
-# =============================================================================
 # LAZY LOADING: Agent components loaded on first request, NOT at startup
-# =============================================================================
 # This is CRITICAL for App Runner health checks to pass during startup
 _agent_module = None
 _chat_func = None
@@ -115,9 +97,7 @@ def _load_agent():
     return _chat_func, _langgraph_app
 
 
-# =============================================================================
 # CRITICAL: Health Check Endpoint (MUST be lightweight)
-# =============================================================================
 # This endpoint returns 200 OK immediately WITHOUT loading AI components.
 # App Runner sends health checks during startup - if this is slow, deployment fails.
 # Using the absolute minimum response for maximum speed and compatibility
@@ -134,9 +114,7 @@ async def health_check():
     return Response(status_code=200, media_type="text/plain")
 
 
-# =============================================================================
 # Root Endpoint (Chatbot UI)
-# =============================================================================
 @app.get("/", tags=["UI"])
 async def read_root():
     """Serve the chatbot UI or return API info"""
@@ -151,9 +129,7 @@ async def read_root():
     }
 
 
-# =============================================================================
 # Main Chat Endpoint (triggers lazy loading)
-# =============================================================================
 @app.post("/chat", tags=["Chat"])
 def talk_to_chatbot(request: ChatRequest):
     """
@@ -206,9 +182,7 @@ def talk_to_chatbot(request: ChatRequest):
         }
 
 
-# =============================================================================
 # Warmup Endpoint (optional - pre-load agent)
-# =============================================================================
 @app.post("/warmup", tags=["Health"])
 async def warmup():
     """
@@ -224,9 +198,7 @@ async def warmup():
         raise HTTPException(status_code=500, detail=f"Warmup failed: {str(e)}")
 
 
-# =============================================================================
 # LangServe Integration (lazy - only if agent is loaded)
-# =============================================================================
 @app.on_event("startup")
 async def setup_langserve():
     """Setup LangServe routes after startup (non-blocking)."""
@@ -246,9 +218,7 @@ async def agent_status():
     }
 
 
-# =============================================================================
 # Local Development Entry Point
-# =============================================================================
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     uvicorn.run(

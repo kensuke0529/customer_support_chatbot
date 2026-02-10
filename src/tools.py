@@ -50,9 +50,7 @@ def _load_purchase_db():
         _db_loaded = True  # Mark as loaded to avoid repeated attempts
 
 
-# ==============================================================================
 # Purchase History Tools
-# ==============================================================================
 
 
 @tool
@@ -190,9 +188,7 @@ def check_order_status(order_id: str) -> str:
         return "Sorry, I couldn't check the order status. Please try again."
 
 
-# ==============================================================================
 # Tool Registry
-# ==============================================================================
 
 # All available tools for the agent
 CUSTOMER_SUPPORT_TOOLS = [

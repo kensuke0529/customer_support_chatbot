@@ -117,9 +117,7 @@ def update_escalation_with_contact_info(session_id: str, thread_id: str, user_em
             print(f"⚠️  Error updating escalation: {error_msg}")
 
 
-# +++++++++++++++++++++++++++++
 # Vector Database Operations
-# +++++++++++++++++++++++++++++
 
 
 def add_embeddings_to_supabase(embeddings_data: list):

@@ -14,9 +14,7 @@ from nodes import (
 import uuid
 
 
-# Routing function for validation decision
 def validation_router(state: ChatbotInfo):
-    """Routes based on validation result"""
     if state.response_validation == "PASS":
         return "end"
     elif state.response_validation == "RETRY" and state.response_retry_count < 3:
@@ -29,9 +27,8 @@ memory = MemorySaver()
 
 workflow = StateGraph(ChatbotInfo)
 
-# Use parallel node for classification + extraction (reduces latency)
 workflow.add_node("classify_and_extract", classify_and_extract_parallel)
-workflow.add_node("execute_tools", execute_tools)  # Tool execution for order lookups
+workflow.add_node("execute_tools", execute_tools)
 workflow.add_node("rag", retrieve_context)
 workflow.add_node("response", generate_response)
 workflow.add_node("response_validation", response_validation)
@@ -40,7 +37,7 @@ workflow.add_node("escalate", escalation_node)
 
 workflow.set_entry_point("classify_and_extract")
 
-# Flow: classify+extract -> tools -> rag -> response -> validation
+
 workflow.add_edge("classify_and_extract", "execute_tools")
 workflow.add_edge("execute_tools", "rag")
 workflow.add_edge("rag", "response")
@@ -57,7 +54,6 @@ workflow.add_edge("escalate", END)
 app = workflow.compile(checkpointer=memory)
 
 
-# Helper function for chat with memory
 def chat(user_message: str, thread_id: str = None):
     """
     Chat function with conversation memory using LangGraph checkpointing.
@@ -69,43 +65,34 @@ def chat(user_message: str, thread_id: str = None):
     Returns:
         tuple: (result dict, thread_id)
     """
-    # Generate thread_id if not provided
     if thread_id is None:
         thread_id = str(uuid.uuid4())
 
-    # Configuration for checkpointing
     config = {"configurable": {"thread_id": thread_id}}
 
-    # Get current state (conversation history) from checkpoint
     current_state = app.get_state(config)
     state_values = current_state.values if current_state.values else {}
     messages = (
         state_values.get("messages", []).copy() if state_values.get("messages") else []
     )
 
-    # Get or generate session_id (persists across conversation)
     session_id = state_values.get("session_id")
     if not session_id:
         session_id = str(uuid.uuid4())
 
-    # Preserve extracted user info from previous messages
     user_email = state_values.get("user_email")
     user_name = state_values.get("user_name")
     order_id = state_values.get("order_id")
     contact_info_source = state_values.get("contact_info_source", "none")
 
-    # Preserve contact request tracking (prevents repeated email asks)
     has_asked_for_contact_info = state_values.get("has_asked_for_contact_info", False)
     contact_ask_count = state_values.get("contact_ask_count", 0)
 
-    # Add new user message to history
     messages.append(HumanMessage(content=user_message))
 
-    # Prepare initial state - only update fields that need to change
-    # This allows LangGraph to properly merge with checkpointed state
     initial_state = {
         "user_message": user_message,
-        "messages": messages,  # Include full history
+        "messages": messages,
         "thread_id": thread_id,
         "session_id": session_id,
         "user_email": user_email,
@@ -114,7 +101,7 @@ def chat(user_message: str, thread_id: str = None):
         "contact_info_source": contact_info_source,
         "has_asked_for_contact_info": has_asked_for_contact_info,
         "contact_ask_count": contact_ask_count,
-        "email_extracted_this_turn": None,  # Reset each turn - only set if email extracted NOW
+        "email_extracted_this_turn": None,
         "needs_contact_info": False,
         "classification_tag": "",
         "context": "",
@@ -122,23 +109,18 @@ def chat(user_message: str, thread_id: str = None):
         "response_validation": "",
         "response_validation_reason": "",
         "response_retry_count": 0,
-        "tool_results": None,  # Reset tool results each turn
+        "tool_results": None,
         "tool_calls_made": [],
     }
 
-    # Run the graph with checkpointing
-    # Use update_state to properly merge with existing checkpoint
     if current_state.values:
-        # Update the state with new message, then invoke
         app.update_state(config, initial_state)
 
     result = app.invoke(initial_state, config=config)
 
-    # Messages are now automatically updated by update_messages_node and saved to checkpoint, so we just need to get them from result
     if "messages" in result:
         messages = result["messages"]
     elif result.get("response"):
-        # Fallback: add assistant message if not already in result
         messages.append(AIMessage(content=result["response"]))
         result["messages"] = messages
 

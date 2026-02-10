@@ -91,9 +91,7 @@ class PurchaseRecord(TypedDict):
     tracking_number: Optional[str]
 
 
-# ==============================================================================
 # Mock Data
-# ==============================================================================
 
 MOCK_PRODUCTS = [
     {"name": "Premium Wireless Headphones", "price": 149.99},
@@ -190,9 +188,7 @@ def create_mock_purchase(customer: dict, days_ago: int) -> PurchaseRecord:
     }
 
 
-# ==============================================================================
 # Database Operations
-# ==============================================================================
 
 
 def put_purchase(record: PurchaseRecord) -> None:
@@ -284,9 +280,7 @@ def get_recent_purchases(email: str, days: int = 30) -> List[PurchaseRecord]:
         return []
 
 
-# ==============================================================================
 # Mock Data Population
-# ==============================================================================
 
 
 def populate_mock_data(num_orders_per_customer: int = 3) -> None:
@@ -316,9 +310,7 @@ def ensure_mock_data_exists() -> None:
         print(f"⚠️ Could not check/populate mock data: {e}")
 
 
-# ==============================================================================
 # Formatted Output for Agent
-# ==============================================================================
 
 
 def format_purchase_for_display(purchase: PurchaseRecord) -> str:
