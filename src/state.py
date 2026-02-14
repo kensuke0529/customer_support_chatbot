@@ -14,28 +14,20 @@ class ChatbotInfo(BaseModel):
     response_validation_reason: str
     response_retry_count: int
 
-    # Memory/Conversation for checkpointing
-    messages: List[BaseMessage] = []  # Full conversation history
-    thread_id: Optional[str] = None  # For checkpointing conversation state
+    messages: List[BaseMessage] = []
+    thread_id: Optional[str] = None
 
-    # User information extraction
     user_email: Optional[str] = None
     user_name: Optional[str] = None
     order_id: Optional[str] = None
-    session_id: Optional[str] = None  # For conversation tracking
-    contact_info_source: str = "none"  # "extracted", "provided", "none"
-    needs_contact_info: bool = False  # Flag to prompt for email on escalation
-    escalation_id: Optional[str] = None  # ID of created escalation record
+    session_id: Optional[str] = None
+    contact_info_source: str = "none"
+    needs_contact_info: bool = False
+    escalation_id: Optional[str] = None
+    has_asked_for_contact_info: bool = False
+    contact_ask_count: int = 0
 
-    # Contact info request tracking - prevents repeated email requests
-    has_asked_for_contact_info: bool = False  # True after we've asked for email once
-    contact_ask_count: int = 0  # Number of times we've asked for contact info
+    email_extracted_this_turn: Optional[str] = None
 
-    # Track newly extracted info this turn (for acknowledgment in response)
-    email_extracted_this_turn: Optional[str] = (
-        None  # Email just extracted from current message
-    )
-
-    # Tool calling support
-    tool_calls_made: List[str] = []  # Track which tools were called
-    tool_results: Optional[str] = None  # Results from tool calls
+    tool_calls_made: List[str] = []
+    tool_results: Optional[str] = None

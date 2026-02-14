@@ -1,8 +1,5 @@
 """
 Purchase History DynamoDB Module
-================================
-Stores and retrieves customer purchase history for order lookups.
-Includes mock data for demo purposes.
 """
 
 import os
@@ -299,13 +296,12 @@ def populate_mock_data(num_orders_per_customer: int = 3) -> None:
 def ensure_mock_data_exists() -> None:
     """Check if mock data exists, create if not."""
     try:
-        # Check if test user has any orders
         test_orders = get_purchases_by_email("test@example.com", limit=1)
         if not test_orders:
-            print("📝 No mock data found, populating...")
+            print("No mock data found, populating...")
             populate_mock_data()
         else:
-            print("✅ Mock data already exists")
+            print("Mock data already exists")
     except Exception as e:
         print(f"⚠️ Could not check/populate mock data: {e}")
 

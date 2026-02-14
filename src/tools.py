@@ -1,21 +1,12 @@
-"""
-Agent Tools Module
-==================
-LangChain tools that the customer support agent can use to look up
-real customer data like purchase history, order status, etc.
-"""
-
 import os
 import sys
 from pathlib import Path
 from typing import Optional
 from langchain_core.tools import tool
 
-# Add project root to path for db imports
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-# Lazy-load database functions to avoid blocking startup
 _db_loaded = False
 _get_purchases_by_email = None
 _get_purchase_by_order_id = None
@@ -44,10 +35,10 @@ def _load_purchase_db():
         _format_purchase_for_display = format_purchase_for_display
         _format_purchase_summary = format_purchase_summary
         _db_loaded = True
-        print("✅ Purchase history database loaded")
+        print("Purchase history database loaded")
     except Exception as e:
-        print(f"⚠️ Could not load purchase history database: {e}")
-        _db_loaded = True  # Mark as loaded to avoid repeated attempts
+        print(f"Could not load purchase history database: {e}")
+        _db_loaded = True  
 
 
 # Purchase History Tools
@@ -58,11 +49,6 @@ def lookup_customer_orders(customer_email: str) -> str:
     """
     Look up a customer's purchase history by their email address.
     Returns a summary of their recent orders including order IDs, dates, and status.
-
-    Use this tool when:
-    - Customer asks about their orders or purchase history
-    - Customer wants to check order status
-    - Customer mentions they made a purchase but doesn't have the order ID
 
     Args:
         customer_email: The customer's email address (required)
@@ -95,14 +81,8 @@ def get_order_details(order_id: str) -> str:
     Get detailed information about a specific order by order ID.
     Returns complete order details including items, shipping, and tracking.
 
-    Use this tool when:
-    - Customer provides an order ID (like ORD-123456)
-    - Customer asks about a specific order
-    - Customer needs tracking information for an order
-
     Args:
-        order_id: The order ID (e.g., ORD-123456)
-
+        order_id
     Returns:
         Detailed order information including items, status, and tracking.
     """
@@ -114,7 +94,6 @@ def get_order_details(order_id: str) -> str:
     if _get_purchase_by_order_id is None:
         return "Sorry, I'm unable to access the order system at the moment. Please try again later."
 
-    # Normalize order ID format
     order_id = order_id.upper().strip()
     if not order_id.startswith("ORD-"):
         order_id = f"ORD-{order_id}"
@@ -134,11 +113,6 @@ def get_order_details(order_id: str) -> str:
 def check_order_status(order_id: str) -> str:
     """
     Quick check of order status and tracking information.
-
-    Use this tool when:
-    - Customer asks "where is my order?"
-    - Customer wants to track their shipment
-    - Customer asks about delivery status
 
     Args:
         order_id: The order ID to check
@@ -187,8 +161,6 @@ def check_order_status(order_id: str) -> str:
         print(f"Error checking order status: {e}")
         return "Sorry, I couldn't check the order status. Please try again."
 
-
-# Tool Registry
 
 # All available tools for the agent
 CUSTOMER_SUPPORT_TOOLS = [
