@@ -1,6 +1,5 @@
 """
 Customer Support AI Agent - FastAPI Application
-================================================
 A production-ready AI agent deployed on AWS App Runner with:
 - Decoupled health check endpoint (critical for AWS App Runner)
 - Lazy loading of heavy AI components
@@ -29,14 +28,6 @@ app = FastAPI(
     title="Customer Support AI Agent",
     version="1.0.0",
     description="""
-    A portfolio-ready AI agent deployed on AWS App Runner.
-    
-    ## Features
-    - 🤖 Intelligent customer support with policy-based responses
-    - 🧠 Conversation memory with LangGraph checkpointing
-    - 📊 LangSmith tracing for observability
-    - 🚀 Production-ready with health checks and streaming support
-    
     ## Endpoints
     - `/health` - Health check for AWS App Runner
     - `/chat` - Main chat endpoint with session management
@@ -69,22 +60,18 @@ class ChatRequest(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    """Health check response model"""
 
     status: str
     version: str = "1.0.0"
     agent_loaded: bool = False
 
 
-# LAZY LOADING: Agent components loaded on first request, NOT at startup
-# This is CRITICAL for App Runner health checks to pass during startup
 _agent_module = None
 _chat_func = None
 _langgraph_app = None
 
 
 def _load_agent():
-    """Lazy load the agent module. Called on first chat request."""
     global _agent_module, _chat_func, _langgraph_app
     if _agent_module is None:
         print("🔄 Loading AI agent components...")
@@ -93,22 +80,11 @@ def _load_agent():
         _chat_func = chat
         _langgraph_app = langgraph_app
         _agent_module = True
-        print("✅ AI agent loaded successfully")
     return _chat_func, _langgraph_app
 
 
-# CRITICAL: Health Check Endpoint (MUST be lightweight)
-# This endpoint returns 200 OK immediately WITHOUT loading AI components.
-# App Runner sends health checks during startup - if this is slow, deployment fails.
-# Using the absolute minimum response for maximum speed and compatibility
 @app.get("/health")
 async def health_check():
-    """
-    Health check endpoint for AWS App Runner.
-
-    Returns immediately with 200 status - no body, no processing, no imports.
-    This is the fastest possible response for App Runner health checks.
-    """
     from fastapi import Response
 
     return Response(status_code=200, media_type="text/plain")
@@ -132,17 +108,8 @@ async def read_root():
 # Main Chat Endpoint (triggers lazy loading)
 @app.post("/chat", tags=["Chat"])
 def talk_to_chatbot(request: ChatRequest):
-    """
-    Main chat endpoint with conversation memory.
 
-    - Maintains conversation history via thread_id
-    - Extracts and persists user information across sessions
-    - Returns structured response with session metadata
-
-    Note: First request may be slower as it loads AI components.
-    """
     try:
-        # Lazy load agent on first request
         chat_func, _ = _load_agent()
 
         result, thread_id = chat_func(request.user_message, request.thread_id)
@@ -198,12 +165,10 @@ async def warmup():
         raise HTTPException(status_code=500, detail=f"Warmup failed: {str(e)}")
 
 
-# LangServe Integration (lazy - only if agent is loaded)
 @app.on_event("startup")
 async def setup_langserve():
     """Setup LangServe routes after startup (non-blocking)."""
-    # Note: LangServe routes are added lazily when agent is loaded
-    # This prevents startup delays
+
     pass
 
 
@@ -218,7 +183,6 @@ async def agent_status():
     }
 
 
-# Local Development Entry Point
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8080))
     uvicorn.run(

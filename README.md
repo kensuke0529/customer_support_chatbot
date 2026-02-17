@@ -4,8 +4,6 @@ An AI-powered customer support agent that handles customer questions wit policy-
 
 **Deployed on AWS App Runner**: Serverless container hosting with automatic scaling
 
-🚀 **[Live Demo](https://cka7u7agtz.us-east-1.awsapprunner.com)**
-
 <img src="static/demo-chatbot1.png" alt="Chatbot Demo" width="700"/>
 
 > The screenshot above shows a demo conversation with the AI agent. For demo purpose, added some purchase history mock data. 
