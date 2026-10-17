@@ -53,19 +53,20 @@ LLM に「全部任せる」チャットボットではなく、**分類 → 情
 
 ### グラフは 7 ノードの一本道
 
-```
-classify_and_extract
-        ↓
-  execute_tools
-        ↓
-       rag
-        ↓
-    response
-        ↓
-response_validation
-   ├ PASS  → update_messages → 終了
-   ├ RETRY（3回未満）→ response へ戻る
-   └ FAIL / 上限超過 → escalate → 終了
+```mermaid
+flowchart TD
+    Start(["ユーザーの問い合わせ"]) --> classify["<b>classify_and_extract</b><br/>意図分類 & 顧客情報抽出（並列）"]
+    classify --> tools["<b>execute_tools</b><br/>注文照会（DynamoDB）"]
+    tools --> rag["<b>rag</b><br/>ポリシー検索（S3 Vectors）"]
+    rag --> response["<b>response</b><br/>回答文生成（gpt-4o-mini）"]
+    response --> validation{"<b>response_validation</b><br/>品質検証"}
+
+    validation -->|PASS| update["<b>update_messages</b><br/>会話履歴更新"]
+    validation -->|"RETRY（3回未満）"| response
+    validation -->|"FAIL / 上限超過"| escalate["<b>escalate</b><br/>人へ引き継ぎ & 記録"]
+
+    update --> Done(["回答送信（終了）"])
+    escalate --> EscalateDone(["オペレーター対応（終了）"])
 ```
 
 ノードは 7 つです。条件分岐は検証のあと 1 箇所だけです。
@@ -86,40 +87,14 @@ LLM がグラフの遷移を決めるのは、検証ノードが `PASS | RETRY |
 
 ### 分類と抽出を並列にした理由
 
-分類と連絡先抽出は互いに必須入力ではありません。直列にすると LLM を 2 回待つことになります。`ThreadPoolExecutor` で同時に回し、どちらかが落ちても分類は `general`、抽出は空、として先に進みます。サポートの 1 ターンでは、この待ちが体感に効きます。
+分類と連絡先抽出は互いに必須入力ではありません。直列にすると LLM を 2 回待つことになります。並列に回し、どちらかが落ちても分類は `general`、抽出は空、として先に進みます。
 
-### RAG を「毎回」走らせる理由
 
-分類タグで検索する / しないを切り替えると、タグ誤りがそのまま回答抜けになります。代わりにクエリを `{classification_tag} question: {user_message}` にして、タグは検索の偏りにだけ使い、検索自体は省略しません。チャンクは 1500 文字、overlap 200、top-k は 5 です（評価の途中で k=3 / 1000 文字から広げました。詳細は後述）。
+### App Runner 選定理由
 
-ポリシーは PDF を分割して S3 Vectors に入れています。埋め込みは `text-embedding-3-small` です。ベクトル DB を自前で立てず、App Runner と同じ AWS 上で完結させたかった、というのが選定理由です。
+個人プロジェクトで EKS は過剰であると判断しました。個人プロジェクトであり、小規模であるため、App Runner で十分であると考えました。
 
-### 生成と検証を分けた理由
-
-同じモデルに「書いて、自分で良いと言え」と頼むと、だいたい通ります。なので生成（`gpt-4o-mini`, `max_tokens=300`）と検証はノードを分けています。
-
-実行時の検証は、オフライン評価より意図的に甘いです。
-
-1. ユーザー文にセキュリティ語があれば即 FAIL（人へ）
-2. 空・極端に短い・短い文での `I don't know` などは RETRY
-3. 分類が `general` かつ十分な長さなら LLM 判定を省略して PASS
-4. それ以外だけ、検証用 LLM が PASS / RETRY / FAIL
-
-オンラインでは「壊れていない回答を通す」。厳しさは LangSmith のオフライン評価に寄せました。本番で毎回厳しい judge を呼ぶと遅くなるし、部分的に正しいセルフサービス案内まで落としてしまうためです。
-
-生成プロンプトでは、エスカレーションと言わないよう縛っています。人へ渡す文面は `escalate` ノードのテンプレートが持ちます。生成 LLM が「サポートチームに上げます」と書いて、検証がそれを品質問題と誤認する、というループを避けるためです。
-
-### セキュリティは専用 Agent にしていない
-
-アカウント侵害や不正利用は、別モデルに「危険かどうか考えて」と聞くより、まずキーワードで確実に上げた方が事故が少ない、と判断しました。`hacked` / `fraud` / `unauthorized` / `stolen` などを検証ノードの Python が見て、当たれば即エスカレーション記録します。
-
-これは誤爆（「hack」を含む無関係な文）と見逃し（言い換え）の両方があります。個人プロジェクトとしては「生成モデルに判断させない」ことを優先しています。認証そのものやアカウントロックは、この Agent の外の話です。
-
-### なぜ App Runner か
-
-個人プロジェクトで EKS は過剰です。コンテナを置いて、ヘルスチェックが通り、負荷で増減すれば足りる、という理由で App Runner にしました。状態は DynamoDB（会話履歴・購入履歴・エスカレーション）、秘密情報は Secrets Manager、API は FastAPI の `/chat` と `/health` です。Agent 本体は初回まで遅延ロードし、App Runner の起動猶予に間に合わせています。
-
-会話のチェックポイントは現状 LangGraph の `MemorySaver`（プロセス内）です。デモの 1 インスタンスでは足りますが、スケールや再起動では切れます。履歴の永続化は DynamoDB 側にも書いてあり、ここは改善余地として残しています。
+会話のチェックポイントは現状 LangGraph のプロセス内保存です。デモの 1 インスタンスでは足りますが、スケールや再起動では切れます。
 
 ---
 
@@ -128,19 +103,17 @@ LLM がグラフの遷移を決めるのは、検証ノードが `PASS | RETRY |
 1. **分類**  
    `gpt-4o-mini` が JSON で意図を返す（billing / subscription / account / shipping / returns / general）。
 2. **抽出**  
-   会話から email / name / order_id を抜く。JSON 失敗時はメールだけ正規表現。
+   会話から email / name / order_id を抽出する。
 3. **ツール**  
-   注文っぽい文言のときだけ購入履歴テーブルを引く。結果は後段のプロンプトに `[ORDER/PURCHASE]` として載せる。
+   購入・配送関連の問い合わせのときだけ購入履歴テーブルを引く。
 4. **RAG**  
-   分類タグ付きクエリでポリシーを top-5 取得。
+   分類タグ付きクエリでポリシーを取得。
 5. **生成**  
    ポリシーを原文に近い数字・パス・期限で引用するよう指示する。履歴がある場合は繰り返さない。
 6. **検証**  
-   上記の fast path → 必要なら LLM。RETRY は最大 3 回、超えればエスカレーション。
+   必要なら LLM。RETRY は最大 3 回、超えればエスカレーション。
 7. **エスカレーション**  
    DynamoDB に理由・分類・試した回答を残し、セキュリティなら緊急の定型文、連絡先が無ければメールを聞く。
-
-フロント（`static/index.html`）は `thread_id` を持ち回して会話を続けます。
 
 ![ワークフロー](static/diagram.png)
 
@@ -148,20 +121,17 @@ LLM がグラフの遷移を決めるのは、検証ノードが `PASS | RETRY |
 
 ## Evaluation
 
-「動いた」ではサポート Agent の良し悪しが分かりません。数字・手順・期限がポリシーと一致しているかを、LangSmith 上でデータセットに対して毎回測るようにしました。
+「動いた」ではサポート Agent の良し悪しが分かりません。数字・手順・期限がポリシーと一致しているかを、LangSmith 上でデータセットに対して測るようにしました。
 
 実行時の検証（甘い PASS/RETRY）と、オフライン評価（厳しい LLM-as-judge）は意図的に別物です。
 
 ### やり方
-
-`langsmith/test_response_eval.py` が本線です。
 
 1. LangSmith データセット `eval_set` の各例を読む
 2. 毎回新しい `thread_id` で LangGraph を 1 ターン実行する（`/chat` は通さない）
 3. 出力 `response` を 2 つの evaluator に渡す
 4. 実験名 `response-eval-llm-judge` として記録する
 
-分類だけを見る実験（`test_classification_eval.py`）も別途あります。こちらは LLM-as-judge ではなく、予測ラベルと期待ラベルの一致（0/1）です。
 
 ### 回答品質の 3 指標（LLM-as-judge）
 
@@ -173,17 +143,8 @@ Judge モデルは **gpt-4o**（temperature 0）。生成側の gpt-4o-mini よ�
 | **Specificity** | 次の行動が具体か | 「設定から」止まりでパスが無い、`soon` などの曖昧語 |
 | **Completeness** | 解決に必要な情報が揃っているか | 写真提出・確認メール・対象外条件の欠落 |
 
-プロンプト上、設定パスがポリシーにあるのに「contact support」と書いた場合は Policy Accuracy を 0–3 に落とす、と明示しています。オンライン検証では通る回答でも、ここで落ちます。
 
-### エスカレーション判定（ルール）
-
-2 つ目の evaluator は LLM を使いません。データセットの `escalate`（true/false）と、回答文に `escalated to our support team` などの句があるかを比較し、一致なら 1 です。
-
-「上げるべきときに上げたか」と「上げなくてよいときに上げていないか」の両方を見ます。生成側は escalation と言わないよう縛っているので、実際に上がったターンは `escalate` ノードの定型文がこの句を含む前提です。
-
-### データセット（本線 15 件）
-
-`langsmith/eval_set.csv` が対応表です。ポリシー PDF ごとの事実確認が中心で、エスカレーションは 15 件中 3 件です。
+### データセットサンプル
 
 | # | 質問の要旨 | 参照ポリシー | 期待 | エスカレーション |
 |---|---|---|---|---|
@@ -203,15 +164,11 @@ Judge モデルは **gpt-4o**（temperature 0）。生成側の gpt-4o-mini よ�
 | 14 | Premium の critical が 3 日未解決 | Customer Support | SLA は 24 時間 | **はい** |
 | 15 | メキシコ配送の例外をお願い | Shipping & Delivery | 対象地域外 | **はい** |
 
-見ている失敗モードは 3 種類です。
+見ている失敗パターンは 3 種類です。
 
 - **事実の取り違え**（期限、料金、パス）
 - **例外の取り扱い**（ギフトカード不可、日割り返金なし）
 - **人に渡すべき案件**（侵害、SLA 超過、ポリシー外の例外願い）
-
-15 件は小さいです。注文 ID を使ったツール経路や、複数ターンでのメール抽出は、このセットではほぼ見ていません。分類ラベルも CSV 側は `Support` / `Escalation`、実装側は `general` / `returns` などになっており、分類実験と実装のタクソノミは完全には一致していません。評価として測れているのは、主に **1 ターンのポリシー回答と、上げる/上げない** です。
-
-より手順の長い参照回答は `eval_response.csv`（15 件）にあります。二重課金、サブスク一時停止、税免除、35 日経過の返品、決済失敗などです。`eval-sample.csv`（約 50 件）は分類の網羅用で、期待回答が質問と食い違う行があるため、回答品質の judge には使いません。
 
 ### 改善の履歴
 
@@ -222,12 +179,10 @@ Judge モデルは **gpt-4o**（temperature 0）。生成側の gpt-4o-mini よ�
 | 回 | スコア | 何をしたか | 分かったこと |
 |---|---|---|---|
 | 1. ベース | **0.59** | 生成 + 小さめ RAG | 返事は丁寧だが「設定からどうぞ」で終わる。期限とパスが落ちる。k が小さく、関連チャンクを取りこぼす |
-| 2. RAG | **0.70**（+19%） | k=3→5、チャンク 1000→1500（overlap 200） | ポリシー本文がプロンプトに載るようになり、数字は出る。まだ言い換えが残る |
-| 3. プロンプト | **0.74**（ベース比 +25%） | 期限・連絡先・画面パスを原文のまま書け、言い換えるな、と明示 | Specificity と Policy Accuracy が上がる。セルフサービス案内を「サポートへ」に逃がしにくくなる |
+| 2. RAG | **0.70**（+19%） | k=3→5、チャンク 1000→1500 | ポリシー本文がプロンプトに載るようになり、数字は出る。まだ言い換えが残る |
+| 3. プロンプト | **0.74**（ベース比 +25%） | 期限・連絡先・画面パスを原文のまま書く、言い換えない、と明示 | Specificity と Policy Accuracy が上がる。セルフサービス案内を「サポートへ」に逃がしにくくなる |
 
-グラフを複雑にするより、**渡す文脈を厚くし、引用ルールを厳しくする**方が、このタスクでは効きました。0.74 は「改善は出ているが、ポリシー厳格運用の目安（おおよそ 0.80）には届いていない」と見ています。残る失敗は、検索が空に近いときの一般論、およびエスカレーション文面と evaluator の句のずれです。
-
-LangSmith 上ではケースごとの内訳（3 指標 + エスカレーション当否）を見られます。
+グラフを複雑にするより、**渡す文脈を厚くし、引用ルールを厳しくする**方が、このタスクでは効きました。0.74 は「改善は出ているが、ポリシー厳格運用の目安には届いていない」と考えています。
 
 ![LangSmith ダッシュボード](static/eval2.png)
 
@@ -241,7 +196,6 @@ LangSmith 上ではケースごとの内訳（3 指標 + エスカレーショ�
 | LLM | gpt-4o-mini（分類・抽出・生成・検証） | レイテンシとコスト。Judge だけ gpt-4o |
 | RAG | OpenAI embeddings + S3 Vectors | AWS 内で完結、マネージド |
 | 注文・履歴 | DynamoDB | App Runner と相性が良い |
-| API / UI | FastAPI + 静的 HTML | デモを同じコンテナで出す |
 | 評価 | LangSmith | データセットと実験の履歴が残る |
 | デプロイ | AWS CDK → App Runner | 個人開発でクラスタを持たない |
 
@@ -261,35 +215,16 @@ LangSmith 上ではケースごとの内訳（3 指標 + エスカレーショ�
 
 ---
 
-## まだやっていないこと
+## 今後の課題
 
 個人プロジェクトとして意図的に残している限界です。
 
 - 会話チェックポイントがプロセス内メモリ。複数インスタンスでは `thread_id` だけでは足りない
-- 注文 ID 検索はデモ規模の Scan。本番なら GSI が必要
-- セキュリティ検知はキーワード。言い換えには弱い
-- 評価セットが 1 ターン・15 件。ツール経路と複数ターンは未計測
+- 注文 ID 検索はデモ規模
+- セキュリティ検知はキーワード検索に依存している
+- 評価セットの不足。
 - ポリシー PDF の再投入スクリプトとリポジトリ内の文書が揃っていない
 
-次にやるなら、LLM ノードを増やすより、永続チェックポイントと評価セット（ツール・複数ターン・分類ラベルの統一）の方が、この Agent の主張と一致します。
-
----
-
-## ローカルでの動かし方（概要）
-
-```bash
-# 依存関係
-pip install -r requirements.txt
-
-# .env に OPENAI_API_KEY, LANGCHAIN_API_KEY など
-uvicorn backend.app.main:app --host 0.0.0.0 --port 8080
-```
-
-ブラウザで `/` がデモ UI、`POST /chat` が本体です。インフラは `infra/README.md` を参照してください。
-
-<div align="right"><a href="#top">トップへ戻る ↑</a> / <a href="#english">Jump to English section →</a></div>
-
----
 
 <a id="english"></a>
 
@@ -335,19 +270,20 @@ This repository implements that philosophy end-to-end: Policy RAG + Order Lookup
 
 ### 1. Deterministic 7-Node Pipeline
 
-```
-classify_and_extract
-        ↓
-  execute_tools
-        ↓
-       rag
-        ↓
-    response
-        ↓
-response_validation
-   ├ PASS  → update_messages → End
-   ├ RETRY (< 3 times) → Back to response
-   └ FAIL / Max retries exceeded → escalate → End
+```mermaid
+flowchart TD
+    Start(["Customer Inquiry"]) --> classify["<b>classify_and_extract</b><br/>Intent Classification & Info Extraction (Parallel)"]
+    classify --> tools["<b>execute_tools</b><br/>Order Lookup (DynamoDB)"]
+    tools --> rag["<b>rag</b><br/>Policy Retrieval (S3 Vectors)"]
+    rag --> response["<b>response</b><br/>Response Generation (gpt-4o-mini)"]
+    response --> validation{"<b>response_validation</b><br/>Quality Validation"}
+
+    validation -->|PASS| update["<b>update_messages</b><br/>Update Conversation History"]
+    validation -->|"RETRY (< 3 times)"| response
+    validation -->|"FAIL / Max Retries"| escalate["<b>escalate</b><br/>Human Escalation & Logging"]
+
+    update --> Done(["Send Response (End)"])
+    escalate --> EscalateDone(["Operator Handoff (End)"])
 ```
 
 The pipeline contains 7 nodes with only a single conditional branch after response validation:
