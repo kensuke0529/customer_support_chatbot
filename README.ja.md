@@ -2,7 +2,7 @@
 
 # カスタマーサポート Agent
 
-**[English in README.md](./README.md#english) | [日本語 (README.md)](./README.md#japanese)**
+**[日本語 (README.md)](./README.md#japanese) | [English in README.md](./README.md#english)**
 
 </div>
 

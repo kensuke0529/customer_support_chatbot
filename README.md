@@ -1,277 +1,10 @@
 <div id="top" align="center">
 
-# Customer Support Agent / カスタマーサポート Agent
+# カスタマーサポート Agent / Customer Support Agent
 
-**[English](#english) | [日本語](#japanese)**
+**[日本語](#japanese) | [English](#english)**
 
 </div>
-
----
-
-<a id="english"></a>
-
-# Customer Support Agent
-
-A customer support AI agent designed to provide strictly policy-grounded answers and escalate to human operators only when necessary.
-
-Rather than relying on an unconstrained LLM to "handle everything", this system executes a deterministic pipeline built with **LangGraph StateGraph**: **Classification → Info Extraction → Order Lookup → Policy RAG → Response Generation → Quality Validation → Escalation**. Hosted serverless on **AWS App Runner**.
-
-<img src="static/demo-chatbot1.png" alt="Chat Demo" width="700"/>
-
-> Includes mock purchase history data for demonstration purposes. The live App Runner deployment may periodically be paused to manage hosting costs.
-
----
-
-## Project Motivation & Philosophy
-
-Customer support is a ubiquitous showcase for Generative AI. However, the real-world operational challenge is not "speaking fluently," but **never providing incorrect information**.
-
-- Returns are not "around a month" — they are strictly **within 30 days of delivery**.
-- Changing an email address is not "do it from settings" — the exact UI path is **Settings > Account > Email**.
-- Account takeovers and security issues must not be handled with casual chat — they must immediately be **escalated to humans**.
-
-In early iterations, we experimented with a standard ReAct-style agent where the LLM dynamically decides its next step and tool calls. While conversational flow was smooth, it caused numerous failures in support scenarios: invoking order lookup tools for general questions, "trying too hard" to answer issues that should have been escalated, and inventing procedures not grounded in policy.
-
-We therefore pivoted our design philosophy:
-
-> **The LLM is responsible solely for natural language synthesis and evaluation. Code determines which node executes next and which tools are invoked.**
-
-This repository implements that philosophy end-to-end: Policy RAG + Order Lookup Tools + Dual-Layer Validation + Human Escalation.
-
-### Supported Categories:
-- **Billing / Payment**: Charges, invoices, payment methods, pricing
-- **Subscription**: Onboarding, cancellation, tier changes
-- **Account**: Login issues, password resets, profile management
-- **Shipping / Delivery**: Tracking, delivery status, courier updates
-- **Returns / Refunds**: Returns process, refunds, damaged items
-- **General**: Other general inquiries
-
----
-
-## Architectural Decisions
-
-### 1. Deterministic 7-Node Pipeline
-
-```
-classify_and_extract
-        ↓
-  execute_tools
-        ↓
-       rag
-        ↓
-    response
-        ↓
-response_validation
-   ├ PASS  → update_messages → End
-   ├ RETRY (< 3 times) → Back to response
-   └ FAIL / Max retries exceeded → escalate → End
-```
-
-The pipeline contains 7 nodes with only a single conditional branch after response validation:
-
-| Node | Responsibility | Decision Maker |
-|---|---|---|
-| `classify_and_extract` | Intent classification & extraction of email, name, order ID (in parallel) | LLM |
-| `execute_tools` | Queries DynamoDB if order lookup keywords are detected | Python (Rule-based) |
-| `rag` | Retrieves policy passages from S3 Vectors | Always runs (Code, not LLM) |
-| `response` | Generates customer-facing answer | LLM |
-| `response_validation` | Evaluates response: PASS / RETRY / FAIL | Python first; LLM as fallback |
-| `update_messages` | Appends response to conversation history | Python |
-| `escalate` | Escalates to human with templated message and logs to DB | Python |
-
-**Why not ReAct?**
-In customer support, required actions are almost entirely discernible from the query structure. If tracking numbers or order IDs are present, query the order DB; otherwise, search policy documents; if security words appear, escalate. Letting an LLM decide transitions every single turn inflates latency and token costs while increasing variance and policy violations.
-
-The LLM only influences graph transitions when the validation node outputs `PASS | RETRY | FAIL`. Tool invocation avoids LLM function calling; instead, Python rules detect order-related keywords and route between `check_order_status`, `get_order_details`, and `lookup_customer_orders` depending on whether an order ID is present.
-
-### 2. Parallel Classification & Extraction
-
-Intent classification and customer contact extraction are mutually independent. Running them sequentially would incur two consecutive LLM latency penalties. By running them concurrently via `ThreadPoolExecutor`, we minimize per-turn response latency. If either call fails, classification safely defaults to `general` and extraction to empty values.
-
-### 3. Running RAG on Every Turn
-
-Gating RAG based on classification tags means a classification error directly leads to missing information. Instead, we formulate the semantic search query as `{classification_tag} question: {user_message}`. The tag provides domain focus for the vector search, while retrieval itself is never skipped. We use a chunk size of 1,500 characters with 200 overlap and `top_k = 5` (expanded from k=3 / 1,000 characters during offline evaluation).
-
-Policy documents (PDFs) are chunked and stored in S3 Vectors using OpenAI `text-embedding-3-small`. This keeps infrastructure fully serverless and co-located in AWS alongside App Runner without managing a dedicated vector DB cluster.
-
-### 4. Separation of Response Generation and Validation
-
-Asking the same LLM to "write an answer and judge whether it's good" almost always results in confirmation bias (false PASS). Therefore, generation (`gpt-4o-mini`, `max_tokens=300`) and validation are strictly separated into different nodes.
-
-Online runtime validation is intentionally more lenient than offline evaluation:
-1. Immediate FAIL & escalation if user message contains security keywords (`hacked`, `fraud`, etc.)
-2. RETRY if response is empty, excessively brief, or contains generic "I don't know" phrases
-3. Immediate PASS (skipping validation LLM) if classification is `general` and length is adequate
-4. Validation LLM evaluates PASS / RETRY / FAIL only for the remaining cases
-
-The online rule is "let non-broken answers pass quickly." Strict judging is offloaded to offline LangSmith evaluation to avoid added latency and premature rejection of partially correct self-service guides.
-
-Furthermore, the generation prompt strictly forbids mentioning escalation. Templated escalation messages belong solely to the `escalate` node. This prevents an infinite retry loop where generation outputs "I will escalate this" and the validation node rejects it as a low-quality policy answer.
-
-### 5. Rule-Based Security Detection
-
-For account takeovers and unauthorized activity, keyword-based deterministic escalation (`hacked`, `fraud`, `unauthorized`, `stolen`) is safer and more reliable than asking an LLM to "reason about danger." While keyword heuristics can produce occasional false positives or miss novel paraphrases, eliminating generative hallucination in security-critical paths was our top design priority. Real authentication and account lockouts remain outside this agent's scope.
-
-### 6. Why AWS App Runner?
-
-Kubernetes (EKS) is excessive overhead for a personal project. AWS App Runner provides zero-maintenance container execution, automatic health checks, and autoscaling. State is persisted in DynamoDB (conversation history, purchase mock data, escalations), secrets in AWS Secrets Manager, and API endpoints are exposed via FastAPI (`/chat`, `/health`). LangGraph is lazily loaded to ensure App Runner health checks pass immediately on cold start.
-
-Conversation checkpointing currently utilizes LangGraph's in-process `MemorySaver`. While adequate for single-instance demos, multi-instance horizontal scaling would require external checkpointer persistence (conversation history is also backed up to DynamoDB as a foundational step).
-
----
-
-## Request Lifecycle (1 Turn)
-
-1. **Classification**: `gpt-4o-mini` outputs intent as JSON (`billing`, `subscription`, `account`, `shipping`, `returns`, `general`).
-2. **Extraction**: Extracts `email`, `name`, and `order_id` from conversation context. Falls back to regex for email if JSON parsing fails.
-3. **Tool Execution**: If order-related keywords are detected, queries DynamoDB purchase history. Formats output as `[ORDER/PURCHASE]` in subsequent prompts.
-4. **RAG**: Queries S3 Vectors using `{classification_tag} question: {user_message}` to fetch top-5 policy excerpts.
-5. **Response Generation**: Generates response strictly referencing exact numbers, navigation paths, and timeframes from retrieved policies. Avoids repetition across history.
-6. **Validation**: Evaluates via fast-path Python rules → LLM judge if necessary. Max 3 retries before automatic escalation.
-7. **Escalation**: Logs escalation metadata (reason, classification, attempted answer) to DynamoDB. Displays emergency instructions for security issues or prompts for email if missing.
-
-The frontend (`static/index.html`) maintains conversational continuity across turns via `thread_id`.
-
-![Workflow Architecture](static/diagram.png)
-
----
-
-## Evaluation
-
-"It works" is insufficient for a customer support agent. We established an automated offline evaluation pipeline in **LangSmith** to measure fidelity against exact policy numbers, steps, and deadlines.
-
-Runtime validation (lenient PASS/RETRY) and offline evaluation (strict LLM-as-judge) serve fundamentally different purposes.
-
-### Evaluation Workflow
-
-The primary evaluation script is `langsmith/test_response_eval.py`:
-1. Reads test cases from LangSmith dataset `eval_set`
-2. Executes the LangGraph agent for 1 turn using a fresh `thread_id` (bypassing `/chat` HTTP API)
-3. Evaluates output `response` with two independent evaluators
-4. Records results under experiment name `response-eval-llm-judge`
-
-A separate classification-only experiment (`test_classification_eval.py`) measures predicted vs. expected label accuracy (0/1).
-
-### 3 Quality Metrics (LLM-as-Judge)
-
-Judge model: **gpt-4o** (temperature 0) — a more capable model than generation's `gpt-4o-mini`. Scores 0–10 against reference answers, normalized to 0.0–1.0:
-
-| Metric | What It Measures | Example Penalties |
-|---|---|---|
-| **Policy Accuracy** | Fidelity to company policy | Saying "contact support" when self-service exists; paraphrasing timeframes (e.g. "1–3 days" instead of "5–7 days") |
-| **Specificity** | Actionability of next steps | Saying "go to settings" without full UI path; using ambiguous terms like `soon` |
-| **Completeness** | Inclusion of all prerequisites | Omitting photo requirements, confirmation email steps, or non-refundable exclusions |
-
-In our judge prompt, if a self-service path exists in policy but the model responds "please contact support," Policy Accuracy is penalized to 0–3. Answers that pass online validation will fail here if non-specific.
-
-### Escalation Evaluator (Rule-Based)
-
-The second evaluator does not use an LLM. It verifies whether the ground-truth `escalate` boolean matches the presence of phrases like `escalated to our support team` in the final response (1 = match, 0 = mismatch). This verifies both true positives ("escalated when required") and true negatives ("did not escalate unnecessarily").
-
-### Benchmark Dataset (15 Ground-Truth Cases)
-
-`langsmith/eval_set.csv` tests core policy factuality across all PDF policies, with 3 escalation cases out of 15:
-
-| # | Question Summary | Policy Document | Expected Policy Fact | Escalate? |
-|---|---|---|---|---|
-| 1 | Return timeframe | Customer Support | 30 days after delivery | No |
-| 2 | Can gift cards be returned? | Customer Support | Non-refundable | No |
-| 3 | Arrived damaged | Customer Support | Photos within 48h, immediate replacement | No |
-| 4 | Phone support operating hours | Customer Support | Weekdays 9 AM–5 PM EST | No |
-| 5 | Open on Thanksgiving? | Customer Support | Phone & chat closed, email 24/7 | No |
-| 6 | Premium plan email response SLA | Customer Support | Under 1 hour | No |
-| 7 | Account lock on failed logins | Account Management | 5 failed attempts, locked for 30 min | No |
-| 8 | How to change email address | Account Management | Settings > Account > Email | No |
-| 9 | Account was hacked | Account Management | `security@company.com`, password reset, 2FA | **Yes** |
-| 10 | Basic plan annual price | Billing & Payment | $99.99 / year | No |
-| 11 | Do subscriptions auto-renew? | Subscription | Automatic renewal unless opted out | No |
-| 12 | Refund for current month upon cancel? | Subscription | No prorated refund, access until period end | No |
-| 13 | Express shipping transit time | Shipping & Delivery | 1–2 business days | No |
-| 14 | Premium critical issue open for 3 days | Customer Support | SLA breached (SLA is 24 hours) | **Yes** |
-| 15 | Request exception for Mexico delivery | Shipping & Delivery | Outside supported regions | **Yes** |
-
-Tested failure modes include:
-- **Fact distortion** (deadlines, pricing, navigation paths)
-- **Exception mishandling** (gift card exclusions, no prorated subscription refunds)
-- **Escalation boundary cases** (security breaches, SLA violations, policy exception requests)
-
-Extended multi-step reference answers are in `eval_response.csv` (15 cases: double billing, pausing subscription, tax exemption, 35-day late returns, failed transactions). `eval-sample.csv` (~50 rows) tests classification coverage.
-
-### Performance & Improvement History
-
-We tracked iterative improvements on the exact same dataset without modifying graph architecture, isolating the impact of retrieval tuning and prompt constraints:
-
-![Evaluation Results](static/eval.png)
-
-| Iteration | Score | What Changed | Insights |
-|---|---|---|---|
-| 1. Baseline | **0.59** | Base generation + minimal RAG | Polite tone, but answers ended with vague "visit settings". Missed deadlines and UI paths. Small k missed relevant chunks. |
-| 2. RAG Optimization | **0.70** (+19%) | k=3 → 5, chunks 1000 → 1500 chars (overlap 200) | Full policy text injected into context. Numerical facts improved, but paraphrasing persisted. |
-| 3. Prompt Refinement | **0.74** (+25% vs base) | Strict rule: quote exact timeframes, emails, UI paths verbatim without paraphrasing | Significant jump in Specificity and Policy Accuracy. Prevents deflecting self-service to "contact support". |
-
-Conclusion: **Enriching context window density and enforcing strict verbatim citation rules** delivered greater gains than increasing pipeline complexity. 0.74 represents substantial progress, though still below our production threshold of ~0.80. Remaining misses stem from empty vector search fallbacks and subtle wording variations in escalation phrases.
-
-Case-by-case score breakdowns across all metrics are visible in LangSmith:
-
-![LangSmith Dashboard](static/eval2.png)
-
----
-
-## Tech Stack
-
-| Layer | Choice | Rationale |
-|---|---|---|
-| Orchestration | LangGraph StateGraph | Deterministic control over branching, retries, and state |
-| LLM | `gpt-4o-mini` (classify, extract, generate, validate) | High throughput and cost efficiency; `gpt-4o` reserved for offline Judge |
-| RAG | OpenAI Embeddings + S3 Vectors | Serverless, managed vector store within AWS ecosystem |
-| State & Tools | AWS DynamoDB | Serverless, low-latency key-value store natively integrated with App Runner |
-| API & UI | FastAPI + Static HTML/JS | Single container serves both API and interactive demo UI |
-| Evaluation | LangSmith | Versioned evaluation datasets, trace tracking, and LLM-as-judge runs |
-| Deployment | AWS CDK → AWS App Runner | Fully managed serverless container hosting without Kubernetes complexity |
-
-![App Runner](static/apprunner.png)
-
-### Repository Structure
-- `src/agent.py` — Graph definition & `chat()` entrypoint
-- `src/nodes/` — Node implementations (`classify_and_extract`, `tools`, `rag`, `response`, `validation`, `escalate`, `update_messages`)
-- `src/prompts.py` — Prompt templates for classification and generation
-- `src/tools.py` — 3 order lookup tools backed by DynamoDB
-- `backend/app/main.py` — FastAPI application (`/chat`, `/health`, `/warmup`)
-- `langsmith/` — Offline evaluation scripts and benchmark datasets
-- `infra/` — AWS CDK infrastructure definitions (App Runner, IAM, DynamoDB, Secrets Manager)
-
-Detailed code explanation: [src/README.md](./src/README.md).
-
----
-
-## Current Limitations & Future Work
-
-Design boundaries intentionally left for this personal project:
-- **In-Memory Checkpointing**: Conversation state uses LangGraph `MemorySaver`. Horizontal scaling across multiple App Runner instances requires externalized session state (DynamoDB schema exists for message persistence).
-- **Order ID Lookup via Table Scan**: Fine for demo scale; production requires DynamoDB Global Secondary Index (GSI).
-- **Keyword-Based Security Detection**: Fast and deterministic, but vulnerable to creative phrasing variations.
-- **Evaluation Dataset Scope**: Currently 15 single-turn queries. Multi-turn dialogues and tool execution paths require expanded test suites.
-- **Policy Ingestion Pipeline**: Ingestion script and repository PDF documentation need unified automation.
-
-Future priorities should focus on external persistent checkpointers and expanded multi-turn evaluation datasets rather than adding more LLM nodes.
-
----
-
-## Running Locally
-
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Configure environment in .env (OPENAI_API_KEY, LANGCHAIN_API_KEY, AWS credentials, etc.)
-uvicorn backend.app.main:app --host 0.0.0.0 --port 8080
-```
-
-- Web UI: `http://localhost:8080/`
-- API Endpoint: `POST /chat`
-- Infrastructure deployment: See [infra/README.md](./infra/README.md).
-
-<div align="right"><a href="#top">Back to top ↑</a> / <a href="#japanese">日本語セクションへジャンプ →</a></div>
 
 ---
 
@@ -555,3 +288,270 @@ uvicorn backend.app.main:app --host 0.0.0.0 --port 8080
 ブラウザで `/` がデモ UI、`POST /chat` が本体です。インフラは `infra/README.md` を参照してください。
 
 <div align="right"><a href="#top">トップへ戻る ↑</a> / <a href="#english">Jump to English section →</a></div>
+
+---
+
+<a id="english"></a>
+
+# Customer Support Agent
+
+A customer support AI agent designed to provide strictly policy-grounded answers and escalate to human operators only when necessary.
+
+Rather than relying on an unconstrained LLM to "handle everything", this system executes a deterministic pipeline built with **LangGraph StateGraph**: **Classification → Info Extraction → Order Lookup → Policy RAG → Response Generation → Quality Validation → Escalation**. Hosted serverless on **AWS App Runner**.
+
+<img src="static/demo-chatbot1.png" alt="Chat Demo" width="700"/>
+
+> Includes mock purchase history data for demonstration purposes. The live App Runner deployment may periodically be paused to manage hosting costs.
+
+---
+
+## Project Motivation & Philosophy
+
+Customer support is a ubiquitous showcase for Generative AI. However, the real-world operational challenge is not "speaking fluently," but **never providing incorrect information**.
+
+- Returns are not "around a month" — they are strictly **within 30 days of delivery**.
+- Changing an email address is not "do it from settings" — the exact UI path is **Settings > Account > Email**.
+- Account takeovers and security issues must not be handled with casual chat — they must immediately be **escalated to humans**.
+
+In early iterations, we experimented with a standard ReAct-style agent where the LLM dynamically decides its next step and tool calls. While conversational flow was smooth, it caused numerous failures in support scenarios: invoking order lookup tools for general questions, "trying too hard" to answer issues that should have been escalated, and inventing procedures not grounded in policy.
+
+We therefore pivoted our design philosophy:
+
+> **The LLM is responsible solely for natural language synthesis and evaluation. Code determines which node executes next and which tools are invoked.**
+
+This repository implements that philosophy end-to-end: Policy RAG + Order Lookup Tools + Dual-Layer Validation + Human Escalation.
+
+### Supported Categories:
+- **Billing / Payment**: Charges, invoices, payment methods, pricing
+- **Subscription**: Onboarding, cancellation, tier changes
+- **Account**: Login issues, password resets, profile management
+- **Shipping / Delivery**: Tracking, delivery status, courier updates
+- **Returns / Refunds**: Returns process, refunds, damaged items
+- **General**: Other general inquiries
+
+---
+
+## Architectural Decisions
+
+### 1. Deterministic 7-Node Pipeline
+
+```
+classify_and_extract
+        ↓
+  execute_tools
+        ↓
+       rag
+        ↓
+    response
+        ↓
+response_validation
+   ├ PASS  → update_messages → End
+   ├ RETRY (< 3 times) → Back to response
+   └ FAIL / Max retries exceeded → escalate → End
+```
+
+The pipeline contains 7 nodes with only a single conditional branch after response validation:
+
+| Node | Responsibility | Decision Maker |
+|---|---|---|
+| `classify_and_extract` | Intent classification & extraction of email, name, order ID (in parallel) | LLM |
+| `execute_tools` | Queries DynamoDB if order lookup keywords are detected | Python (Rule-based) |
+| `rag` | Retrieves policy passages from S3 Vectors | Always runs (Code, not LLM) |
+| `response` | Generates customer-facing answer | LLM |
+| `response_validation` | Evaluates response: PASS / RETRY / FAIL | Python first; LLM as fallback |
+| `update_messages` | Appends response to conversation history | Python |
+| `escalate` | Escalates to human with templated message and logs to DB | Python |
+
+**Why not ReAct?**
+In customer support, required actions are almost entirely discernible from the query structure. If tracking numbers or order IDs are present, query the order DB; otherwise, search policy documents; if security words appear, escalate. Letting an LLM decide transitions every single turn inflates latency and token costs while increasing variance and policy violations.
+
+The LLM only influences graph transitions when the validation node outputs `PASS | RETRY | FAIL`. Tool invocation avoids LLM function calling; instead, Python rules detect order-related keywords and route between `check_order_status`, `get_order_details`, and `lookup_customer_orders` depending on whether an order ID is present.
+
+### 2. Parallel Classification & Extraction
+
+Intent classification and customer contact extraction are mutually independent. Running them sequentially would incur two consecutive LLM latency penalties. By running them concurrently via `ThreadPoolExecutor`, we minimize per-turn response latency. If either call fails, classification safely defaults to `general` and extraction to empty values.
+
+### 3. Running RAG on Every Turn
+
+Gating RAG based on classification tags means a classification error directly leads to missing information. Instead, we formulate the semantic search query as `{classification_tag} question: {user_message}`. The tag provides domain focus for the vector search, while retrieval itself is never skipped. We use a chunk size of 1,500 characters with 200 overlap and `top_k = 5` (expanded from k=3 / 1,000 characters during offline evaluation).
+
+Policy documents (PDFs) are chunked and stored in S3 Vectors using OpenAI `text-embedding-3-small`. This keeps infrastructure fully serverless and co-located in AWS alongside App Runner without managing a dedicated vector DB cluster.
+
+### 4. Separation of Response Generation and Validation
+
+Asking the same LLM to "write an answer and judge whether it's good" almost always results in confirmation bias (false PASS). Therefore, generation (`gpt-4o-mini`, `max_tokens=300`) and validation are strictly separated into different nodes.
+
+Online runtime validation is intentionally more lenient than offline evaluation:
+1. Immediate FAIL & escalation if user message contains security keywords (`hacked`, `fraud`, etc.)
+2. RETRY if response is empty, excessively brief, or contains generic "I don't know" phrases
+3. Immediate PASS (skipping validation LLM) if classification is `general` and length is adequate
+4. Validation LLM evaluates PASS / RETRY / FAIL only for the remaining cases
+
+The online rule is "let non-broken answers pass quickly." Strict judging is offloaded to offline LangSmith evaluation to avoid added latency and premature rejection of partially correct self-service guides.
+
+Furthermore, the generation prompt strictly forbids mentioning escalation. Templated escalation messages belong solely to the `escalate` node. This prevents an infinite retry loop where generation outputs "I will escalate this" and the validation node rejects it as a low-quality policy answer.
+
+### 5. Rule-Based Security Detection
+
+For account takeovers and unauthorized activity, keyword-based deterministic escalation (`hacked`, `fraud`, `unauthorized`, `stolen`) is safer and more reliable than asking an LLM to "reason about danger." While keyword heuristics can produce occasional false positives or miss novel paraphrases, eliminating generative hallucination in security-critical paths was our top design priority. Real authentication and account lockouts remain outside this agent's scope.
+
+### 6. Why AWS App Runner?
+
+Kubernetes (EKS) is excessive overhead for a personal project. AWS App Runner provides zero-maintenance container execution, automatic health checks, and autoscaling. State is persisted in DynamoDB (conversation history, purchase mock data, escalations), secrets in AWS Secrets Manager, and API endpoints are exposed via FastAPI (`/chat`, `/health`). LangGraph is lazily loaded to ensure App Runner health checks pass immediately on cold start.
+
+Conversation checkpointing currently utilizes LangGraph's in-process `MemorySaver`. While adequate for single-instance demos, multi-instance horizontal scaling would require external checkpointer persistence (conversation history is also backed up to DynamoDB as a foundational step).
+
+---
+
+## Request Lifecycle (1 Turn)
+
+1. **Classification**: `gpt-4o-mini` outputs intent as JSON (`billing`, `subscription`, `account`, `shipping`, `returns`, `general`).
+2. **Extraction**: Extracts `email`, `name`, and `order_id` from conversation context. Falls back to regex for email if JSON parsing fails.
+3. **Tool Execution**: If order-related keywords are detected, queries DynamoDB purchase history. Formats output as `[ORDER/PURCHASE]` in subsequent prompts.
+4. **RAG**: Queries S3 Vectors using `{classification_tag} question: {user_message}` to fetch top-5 policy excerpts.
+5. **Response Generation**: Generates response strictly referencing exact numbers, navigation paths, and timeframes from retrieved policies. Avoids repetition across history.
+6. **Validation**: Evaluates via fast-path Python rules → LLM judge if necessary. Max 3 retries before automatic escalation.
+7. **Escalation**: Logs escalation metadata (reason, classification, attempted answer) to DynamoDB. Displays emergency instructions for security issues or prompts for email if missing.
+
+The frontend (`static/index.html`) maintains conversational continuity across turns via `thread_id`.
+
+![Workflow Architecture](static/diagram.png)
+
+---
+
+## Evaluation
+
+"It works" is insufficient for a customer support agent. We established an automated offline evaluation pipeline in **LangSmith** to measure fidelity against exact policy numbers, steps, and deadlines.
+
+Runtime validation (lenient PASS/RETRY) and offline evaluation (strict LLM-as-judge) serve fundamentally different purposes.
+
+### Evaluation Workflow
+
+The primary evaluation script is `langsmith/test_response_eval.py`:
+1. Reads test cases from LangSmith dataset `eval_set`
+2. Executes the LangGraph agent for 1 turn using a fresh `thread_id` (bypassing `/chat` HTTP API)
+3. Evaluates output `response` with two independent evaluators
+4. Records results under experiment name `response-eval-llm-judge`
+
+A separate classification-only experiment (`test_classification_eval.py`) measures predicted vs. expected label accuracy (0/1).
+
+### 3 Quality Metrics (LLM-as-Judge)
+
+Judge model: **gpt-4o** (temperature 0) — a more capable model than generation's `gpt-4o-mini`. Scores 0–10 against reference answers, normalized to 0.0–1.0:
+
+| Metric | What It Measures | Example Penalties |
+|---|---|---|
+| **Policy Accuracy** | Fidelity to company policy | Saying "contact support" when self-service exists; paraphrasing timeframes (e.g. "1–3 days" instead of "5–7 days") |
+| **Specificity** | Actionability of next steps | Saying "go to settings" without full UI path; using ambiguous terms like `soon` |
+| **Completeness** | Inclusion of all prerequisites | Omitting photo requirements, confirmation email steps, or non-refundable exclusions |
+
+In our judge prompt, if a self-service path exists in policy but the model responds "please contact support," Policy Accuracy is penalized to 0–3. Answers that pass online validation will fail here if non-specific.
+
+### Escalation Evaluator (Rule-Based)
+
+The second evaluator does not use an LLM. It verifies whether the ground-truth `escalate` boolean matches the presence of phrases like `escalated to our support team` in the final response (1 = match, 0 = mismatch). This verifies both true positives ("escalated when required") and true negatives ("did not escalate unnecessarily").
+
+### Benchmark Dataset (15 Ground-Truth Cases)
+
+`langsmith/eval_set.csv` tests core policy factuality across all PDF policies, with 3 escalation cases out of 15:
+
+| # | Question Summary | Policy Document | Expected Policy Fact | Escalate? |
+|---|---|---|---|---|
+| 1 | Return timeframe | Customer Support | 30 days after delivery | No |
+| 2 | Can gift cards be returned? | Customer Support | Non-refundable | No |
+| 3 | Arrived damaged | Customer Support | Photos within 48h, immediate replacement | No |
+| 4 | Phone support operating hours | Customer Support | Weekdays 9 AM–5 PM EST | No |
+| 5 | Open on Thanksgiving? | Customer Support | Phone & chat closed, email 24/7 | No |
+| 6 | Premium plan email response SLA | Customer Support | Under 1 hour | No |
+| 7 | Account lock on failed logins | Account Management | 5 failed attempts, locked for 30 min | No |
+| 8 | How to change email address | Account Management | Settings > Account > Email | No |
+| 9 | Account was hacked | Account Management | `security@company.com`, password reset, 2FA | **Yes** |
+| 10 | Basic plan annual price | Billing & Payment | $99.99 / year | No |
+| 11 | Do subscriptions auto-renew? | Subscription | Automatic renewal unless opted out | No |
+| 12 | Refund for current month upon cancel? | Subscription | No prorated refund, access until period end | No |
+| 13 | Express shipping transit time | Shipping & Delivery | 1–2 business days | No |
+| 14 | Premium critical issue open for 3 days | Customer Support | SLA breached (SLA is 24 hours) | **Yes** |
+| 15 | Request exception for Mexico delivery | Shipping & Delivery | Outside supported regions | **Yes** |
+
+Tested failure modes include:
+- **Fact distortion** (deadlines, pricing, navigation paths)
+- **Exception mishandling** (gift card exclusions, no prorated subscription refunds)
+- **Escalation boundary cases** (security breaches, SLA violations, policy exception requests)
+
+Extended multi-step reference answers are in `eval_response.csv` (15 cases: double billing, pausing subscription, tax exemption, 35-day late returns, failed transactions). `eval-sample.csv` (~50 rows) tests classification coverage.
+
+### Performance & Improvement History
+
+We tracked iterative improvements on the exact same dataset without modifying graph architecture, isolating the impact of retrieval tuning and prompt constraints:
+
+![Evaluation Results](static/eval.png)
+
+| Iteration | Score | What Changed | Insights |
+|---|---|---|---|
+| 1. Baseline | **0.59** | Base generation + minimal RAG | Polite tone, but answers ended with vague "visit settings". Missed deadlines and UI paths. Small k missed relevant chunks. |
+| 2. RAG Optimization | **0.70** (+19%) | k=3 → 5, chunks 1000 → 1500 chars (overlap 200) | Full policy text injected into context. Numerical facts improved, but paraphrasing persisted. |
+| 3. Prompt Refinement | **0.74** (+25% vs base) | Strict rule: quote exact timeframes, emails, UI paths verbatim without paraphrasing | Significant jump in Specificity and Policy Accuracy. Prevents deflecting self-service to "contact support". |
+
+Conclusion: **Enriching context window density and enforcing strict verbatim citation rules** delivered greater gains than increasing pipeline complexity. 0.74 represents substantial progress, though still below our production threshold of ~0.80. Remaining misses stem from empty vector search fallbacks and subtle wording variations in escalation phrases.
+
+Case-by-case score breakdowns across all metrics are visible in LangSmith:
+
+![LangSmith Dashboard](static/eval2.png)
+
+---
+
+## Tech Stack
+
+| Layer | Choice | Rationale |
+|---|---|---|
+| Orchestration | LangGraph StateGraph | Deterministic control over branching, retries, and state |
+| LLM | `gpt-4o-mini` (classify, extract, generate, validate) | High throughput and cost efficiency; `gpt-4o` reserved for offline Judge |
+| RAG | OpenAI Embeddings + S3 Vectors | Serverless, managed vector store within AWS ecosystem |
+| State & Tools | AWS DynamoDB | Serverless, low-latency key-value store natively integrated with App Runner |
+| API & UI | FastAPI + Static HTML/JS | Single container serves both API and interactive demo UI |
+| Evaluation | LangSmith | Versioned evaluation datasets, trace tracking, and LLM-as-judge runs |
+| Deployment | AWS CDK → AWS App Runner | Fully managed serverless container hosting without Kubernetes complexity |
+
+![App Runner](static/apprunner.png)
+
+### Repository Structure
+- `src/agent.py` — Graph definition & `chat()` entrypoint
+- `src/nodes/` — Node implementations (`classify_and_extract`, `tools`, `rag`, `response`, `validation`, `escalate`, `update_messages`)
+- `src/prompts.py` — Prompt templates for classification and generation
+- `src/tools.py` — 3 order lookup tools backed by DynamoDB
+- `backend/app/main.py` — FastAPI application (`/chat`, `/health`, `/warmup`)
+- `langsmith/` — Offline evaluation scripts and benchmark datasets
+- `infra/` — AWS CDK infrastructure definitions (App Runner, IAM, DynamoDB, Secrets Manager)
+
+Detailed code explanation: [src/README.md](./src/README.md).
+
+---
+
+## Current Limitations & Future Work
+
+Design boundaries intentionally left for this personal project:
+- **In-Memory Checkpointing**: Conversation state uses LangGraph `MemorySaver`. Horizontal scaling across multiple App Runner instances requires externalized session state (DynamoDB schema exists for message persistence).
+- **Order ID Lookup via Table Scan**: Fine for demo scale; production requires DynamoDB Global Secondary Index (GSI).
+- **Keyword-Based Security Detection**: Fast and deterministic, but vulnerable to creative phrasing variations.
+- **Evaluation Dataset Scope**: Currently 15 single-turn queries. Multi-turn dialogues and tool execution paths require expanded test suites.
+- **Policy Ingestion Pipeline**: Ingestion script and repository PDF documentation need unified automation.
+
+Future priorities should focus on external persistent checkpointers and expanded multi-turn evaluation datasets rather than adding more LLM nodes.
+
+---
+
+## Running Locally
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Configure environment in .env (OPENAI_API_KEY, LANGCHAIN_API_KEY, AWS credentials, etc.)
+uvicorn backend.app.main:app --host 0.0.0.0 --port 8080
+```
+
+- Web UI: `http://localhost:8080/`
+- API Endpoint: `POST /chat`
+- Infrastructure deployment: See [infra/README.md](./infra/README.md).
+
+<div align="right"><a href="#top">Back to top ↑</a> / <a href="#japanese">日本語セクションへジャンプ →</a></div>
